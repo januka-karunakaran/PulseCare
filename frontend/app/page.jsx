@@ -877,7 +877,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Right Column: Doctor Photo & Floating Stats Card */}
+          {/* Right Column: Doctor Photo (Clean, Unobstructed) */}
           <div className="cp-hero-right">
             <div className="cp-doctor-img-wrap">
               {/* Doctor with Stethoscope & Glowing Heart (User Photo) */}
@@ -886,31 +886,6 @@ export default function HomePage() {
                 alt="PulseCare Specialist Doctor"
                 className="cp-doctor-photo"
               />
-
-              {/* Floating Stats Card matching reference */}
-              <div className="cp-floating-stat-card">
-                <div className="cp-stat-row">
-                  <div className="cp-stat-icon-circle">
-                    <FaHospitalUser />
-                  </div>
-                  <div className="cp-stat-content">
-                    <div className="cp-stat-big-num">15,000+</div>
-                    <div className="cp-stat-small-label">Happy Patients</div>
-                  </div>
-                </div>
-
-                <div className="cp-stat-divider-h"></div>
-
-                <div className="cp-stat-row">
-                  <div className="cp-stat-icon-circle" style={{ background: "#F0FDF4", color: "#16A34A" }}>
-                    <FaUserDoctor />
-                  </div>
-                  <div className="cp-stat-content">
-                    <div className="cp-stat-big-num">20+</div>
-                    <div className="cp-stat-small-label">Expert Doctors</div>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
