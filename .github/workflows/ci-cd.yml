@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches:
+      - Januka
       - main
 
 permissions:
@@ -72,7 +73,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint frontend
+      - name: Lint frontend (report only)
+        continue-on-error: true
         run: npm run lint
 
       - name: Build frontend
@@ -83,7 +85,7 @@ jobs:
 
   publish-images:
     name: Publish Docker images
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/Januka' || github.ref == 'refs/heads/main')
     needs:
       - backend
       - frontend

@@ -3,13 +3,26 @@
 import Link from "next/link";
 import { useState } from "react";
 import { registerUser, sendSignupOtp } from "@/services/authService";
-import BrandLogo from "@/app/components/BrandLogo";
-import { FaBell, FaChartLine, FaCheckCircle, FaClipboardList, FaEnvelope, FaExclamationTriangle, FaEye, FaEyeSlash, FaLock, FaShieldAlt, FaUser, FaUserMd } from "react-icons/fa";
+import {
+  FaEnvelope,
+  FaTriangleExclamation,
+  FaEye,
+  FaEyeSlash,
+  FaLock,
+  FaShieldHalved,
+  FaUser,
+  FaUserDoctor,
+  FaCircleCheck,
+  FaHeartPulse,
+  FaStethoscope,
+  FaArrowRight,
+  FaArrowLeft,
+} from "react-icons/fa6";
 
 const ROLES = [
   { value: "PATIENT", label: "Patient", icon: <FaUser /> },
-  { value: "DOCTOR", label: "Doctor", icon: <FaUserMd /> },
-  { value: "ADMIN", label: "Admin", icon: <FaShieldAlt /> },
+  { value: "DOCTOR", label: "Doctor", icon: <FaUserDoctor /> },
+  { value: "ADMIN", label: "Admin", icon: <FaShieldHalved /> },
 ];
 
 export default function RegisterPage() {
@@ -41,7 +54,9 @@ export default function RegisterPage() {
       setForm({ fullName: "", email: "", password: "", role: "PATIENT" });
       setOtp("");
       setOtpSent(false);
-      setTimeout(() => { window.location.href = "/login"; }, 1400);
+      setTimeout(() => {
+        window.location.href = "/login";
+      }, 1400);
     } catch (err) {
       setError(err.message || "Registration failed. Please try again.");
     } finally {
@@ -52,375 +67,451 @@ export default function RegisterPage() {
   return (
     <div className="auth-root">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
 
-        .auth-root {
-          font-family: 'Inter', sans-serif;
-          min-height: 100vh;
-          display: flex;
-          background: #0a0e1a;
+        html, body {
+          height: 100%;
+          overflow: hidden;
         }
 
+        .auth-root {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          height: 100vh;
+          max-height: 100vh;
+          overflow: hidden;
+          display: flex;
+          background: #FFFFFF;
+        }
+
+        /* Left visual clinical panel (Single-Screen / Perfectly Centered & Aligned) */
         .auth-left {
           display: none;
           flex-direction: column;
           justify-content: center;
-          align-items: flex-start;
-          padding: 60px;
+          align-items: center;
+          padding: 24px 36px;
           width: 50%;
-          position: relative;
+          height: 100vh;
+          max-height: 100vh;
+          background: #F8FAFC;
+          border-right: 1px solid #E2E8F0;
           overflow: hidden;
-          background: linear-gradient(135deg, #0d1b4b 0%, #0a2b5e 40%, #0e4a8e 100%);
         }
-        @media (min-width: 900px) { .auth-left { display: flex; } }
+        @media (min-width: 980px) { .auth-left { display: flex; } }
 
-        .auth-blob {
-          position: absolute;
-          border-radius: 50%;
-          filter: blur(80px);
-          opacity: 0.2;
-          pointer-events: none;
+        .auth-left-inner {
+          width: 100%;
+          max-width: 440px;
+          display: flex;
+          flex-direction: column;
         }
-        .blob1 { width: 450px; height: 450px; background: #3b82f6; top: -120px; right: -80px; }
-        .blob2 { width: 300px; height: 300px; background: #06b6d4; bottom: -80px; left: -60px; }
 
         .auth-brand {
-          display: flex; align-items: center; gap: 12px;
-          margin-bottom: 52px; z-index: 1;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 18px;
         }
         .auth-brand-icon {
-          width: 48px; height: 48px;
-          background: linear-gradient(135deg, #3b82f6, #06b6d4);
-          border-radius: 14px;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 22px;
+          width: 38px;
+          height: 38px;
+          background: linear-gradient(135deg, #0056D2, #0284C7);
+          border-radius: 12px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 18px;
+          color: white;
+          box-shadow: 0 4px 12px rgba(0, 86, 210, 0.25);
         }
-        .auth-brand-name { font-size: 22px; font-weight: 700; color: #fff; }
+        .auth-brand-name {
+          font-size: 20px;
+          font-weight: 900;
+          color: #0F172A;
+          letter-spacing: -0.4px;
+          line-height: 1.1;
+        }
+        .auth-brand-tagline {
+          font-size: 10px;
+          font-weight: 700;
+          color: #0056D2;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+        }
 
+        .auth-hero-copy {
+          margin-bottom: 16px;
+        }
         .auth-hero-title {
-          font-size: clamp(30px, 3vw, 46px);
-          font-weight: 800; color: #fff;
-          line-height: 1.1; letter-spacing: -1.5px;
-          margin-bottom: 20px; z-index: 1;
+          font-size: clamp(26px, 2.6vw, 34px);
+          font-weight: 900;
+          color: #0F172A;
+          line-height: 1.15;
+          letter-spacing: -0.8px;
+          margin-bottom: 6px;
         }
         .auth-hero-title span {
-          background: linear-gradient(90deg, #60a5fa, #22d3ee);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
+          color: #0056D2;
         }
         .auth-hero-sub {
-          font-size: 16px; color: rgba(255,255,255,0.55);
-          line-height: 1.65; max-width: 380px; z-index: 1;
-          margin-bottom: 48px;
+          font-size: 13.5px;
+          color: #64748B;
+          line-height: 1.5;
         }
 
-        .auth-feature-list { z-index: 1; display: flex; flex-direction: column; gap: 16px; }
-        .auth-feature {
-          display: flex; align-items: flex-start; gap: 14px;
+        /* Doctor & Stethoscope Card (Matches Width of Stats Exactly) */
+        .doctor-visual-card {
+          position: relative;
+          width: 100%;
+          height: 240px;
+          border-radius: 20px;
+          overflow: hidden;
+          background: #0B132B;
+          border: 1px solid #E2E8F0;
+          box-shadow: 0 12px 28px -10px rgba(15, 23, 42, 0.1);
+          margin-bottom: 14px;
         }
-        .auth-feature-icon {
-          width: 38px; height: 38px; min-width: 38px;
-          background: rgba(59,130,246,0.15);
-          border: 1px solid rgba(59,130,246,0.25);
-          border-radius: 10px;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 17px;
+        .doctor-img-overlay {
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(180deg, transparent 65%, rgba(15, 23, 42, 0.45) 100%);
+          z-index: 2;
+          pointer-events: none;
         }
-        .auth-feature-text { }
-        .auth-feature-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 2px; }
-        .auth-feature-desc { font-size: 12px; color: rgba(255,255,255,0.45); }
+        .doctor-img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          object-position: center 35%;
+          display: block;
+        }
+        .doctor-badge-top {
+          position: absolute;
+          top: 12px;
+          left: 12px;
+          z-index: 4;
+          background: rgba(255, 255, 255, 0.95);
+          backdrop-filter: blur(8px);
+          padding: 4px 10px;
+          border-radius: 9999px;
+          font-size: 11px;
+          font-weight: 700;
+          color: #0F172A;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          border: 1px solid rgba(226, 232, 240, 0.8);
+        }
 
-        /* Right */
+        /* Compact 3 Features Bar (Equal Width with Doctor Card) */
+        .auth-features-bar {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 10px;
+          width: 100%;
+        }
+        .auth-feature-pill {
+          background: #FFFFFF;
+          border: 1px solid #E2E8F0;
+          border-radius: 12px;
+          padding: 9px 8px;
+          text-align: center;
+          font-size: 11px;
+          font-weight: 700;
+          color: #334155;
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 5px;
+        }
+        .auth-feature-pill span.check {
+          color: #0056D2;
+          font-weight: 900;
+        }
+
         .auth-right {
           flex: 1;
+          height: 100vh;
+          max-height: 100vh;
           display: flex;
           flex-direction: column;
           justify-content: center;
           align-items: center;
-          padding: 40px 24px;
-          background: #0a0e1a;
+          padding: 20px 36px;
+          background: #FFFFFF;
           overflow-y: auto;
         }
-        .auth-card { width: 100%; max-width: 420px; padding: 8px 0; }
-
-        .auth-mobile-brand {
-          display: flex; align-items: center; gap: 10px;
-          margin-bottom: 36px; justify-content: center;
+        .auth-card {
+          width: 100%;
+          max-width: 440px;
+          background: #FFFFFF;
+          border: 1px solid #E2E8F0;
+          border-radius: 24px;
+          padding: 26px 30px;
+          box-shadow: 0 16px 36px -10px rgba(15, 23, 42, 0.08);
         }
-        @media (min-width: 900px) { .auth-mobile-brand { display: none; } }
-        .auth-mobile-brand-icon {
-          width: 40px; height: 40px;
-          background: linear-gradient(135deg, #3b82f6, #06b6d4);
+
+        .role-selector {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 8px;
+          margin-bottom: 20px;
+        }
+        .role-btn {
+          border: 1.5px solid #CBD5E1;
+          background: #FFFFFF;
           border-radius: 12px;
-          display: flex; align-items: center; justify-content: center;
-          font-size: 18px;
+          padding: 10px 8px;
+          cursor: pointer;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+          font-size: 12.5px;
+          font-weight: 600;
+          color: #475569;
+          transition: all 0.15s;
         }
-        .auth-mobile-brand-name { font-size: 18px; font-weight: 700; color: #fff; }
-
-        .auth-card-title {
-          font-size: 26px; font-weight: 800;
-          color: #fff; letter-spacing: -0.8px;
-          margin-bottom: 6px;
+        .role-btn:hover {
+          border-color: #0056D2;
+          color: #0056D2;
         }
-        .auth-card-sub {
-          font-size: 14px; color: rgba(255,255,255,0.4);
-          margin-bottom: 32px;
-        }
-
-        .auth-error {
-          background: rgba(239,68,68,0.1);
-          border: 1px solid rgba(239,68,68,0.3);
-          color: #fca5a5;
-          padding: 12px 16px; border-radius: 12px;
-          font-size: 13px; margin-bottom: 20px;
-        }
-        .auth-success {
-          background: rgba(34,197,94,0.1);
-          border: 1px solid rgba(34,197,94,0.3);
-          color: #86efac;
-          padding: 12px 16px; border-radius: 12px;
-          font-size: 13px; margin-bottom: 20px;
-          display: flex; align-items: center; gap: 8px;
+        .role-btn.active {
+          border-color: #0056D2;
+          background: #EFF6FF;
+          color: #0056D2;
+          font-weight: 700;
         }
 
-        .auth-field { margin-bottom: 18px; }
+        .auth-field {
+          margin-bottom: 16px;
+        }
         .auth-label {
-          display: block; font-size: 13px; font-weight: 500;
-          color: rgba(255,255,255,0.55); margin-bottom: 8px;
+          display: block;
+          font-size: 11.5px;
+          font-weight: 700;
+          color: #334155;
+          margin-bottom: 6px;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
         }
-        .auth-email-change {
-          margin-top: 7px; padding: 0; border: 0; background: none;
-          color: #60a5fa; font-size: 12px; cursor: pointer;
+        .auth-input-wrap {
+          position: relative;
         }
-        .auth-input:disabled { opacity: 0.65; cursor: not-allowed; }
-        .auth-input-wrap { position: relative; }
         .auth-input {
           width: 100%;
-          background: rgba(255,255,255,0.05);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: #FFFFFF;
+          border: 1.5px solid #CBD5E1;
           border-radius: 12px;
-          padding: 13px 16px;
-          color: #fff;
-          font-size: 15px;
-          font-family: 'Inter', sans-serif;
+          padding: 12px 16px 12px 42px;
+          color: #0F172A;
+          font-size: 14.5px;
           outline: none;
-          transition: all 0.2s;
+          transition: all 0.15s;
         }
-        .auth-input::placeholder { color: rgba(255,255,255,0.22); }
         .auth-input:focus {
-          border-color: #3b82f6;
-          background: rgba(59,130,246,0.08);
-          box-shadow: 0 0 0 4px rgba(59,130,246,0.12);
+          border-color: #0056D2;
+          box-shadow: 0 0 0 3px rgba(0, 86, 210, 0.12);
         }
-        .auth-input.has-icon { padding-left: 44px; }
-        .auth-input.has-eye { padding-right: 44px; }
         .auth-input-icon {
-          position: absolute; left: 14px; top: 50%;
+          position: absolute;
+          left: 14px;
+          top: 50%;
           transform: translateY(-50%);
-          color: rgba(255,255,255,0.28); font-size: 15px;
-          pointer-events: none;
+          color: #94A3B8;
+          font-size: 16px;
         }
         .auth-eye-btn {
-          position: absolute; right: 14px; top: 50%;
+          position: absolute;
+          right: 14px;
+          top: 50%;
           transform: translateY(-50%);
-          background: none; border: none; cursor: pointer;
-          color: rgba(255,255,255,0.3);
-          padding: 4px; transition: color 0.2s;
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: #94A3B8;
+          font-size: 16px;
         }
-        .auth-eye-btn:hover { color: rgba(255,255,255,0.7); }
-
-        .auth-role-label {
-          display: block; font-size: 13px; font-weight: 500;
-          color: rgba(255,255,255,0.55); margin-bottom: 10px;
-        }
-        .auth-role-grid {
-          display: grid; grid-template-columns: repeat(3, 1fr);
-          gap: 10px; margin-bottom: 24px;
-        }
-        .auth-role-btn {
-          padding: 14px 8px;
-          background: rgba(255,255,255,0.04);
-          border: 1.5px solid rgba(255,255,255,0.08);
-          border-radius: 12px;
-          color: rgba(255,255,255,0.45);
-          font-size: 13px; font-weight: 500;
-          font-family: 'Inter', sans-serif;
-          cursor: pointer; text-align: center;
-          transition: all 0.2s;
-        }
-        .auth-role-btn:hover {
-          border-color: rgba(59,130,246,0.35);
-          color: rgba(255,255,255,0.75);
-          background: rgba(59,130,246,0.07);
-        }
-        .auth-role-btn.active {
-          border-color: #3b82f6;
-          background: rgba(59,130,246,0.15);
-          color: #93c5fd;
-        }
-        .auth-role-icon { font-size: 22px; display: block; margin-bottom: 6px; }
 
         .auth-btn {
           width: 100%;
-          background: linear-gradient(135deg, #2563eb, #0284c7);
-          border: none; border-radius: 12px;
-          padding: 15px;
-          color: #fff; font-size: 15px; font-weight: 600;
-          font-family: 'Inter', sans-serif;
-          cursor: pointer; letter-spacing: 0.3px;
-          transition: all 0.2s;
-          box-shadow: 0 4px 24px rgba(37,99,235,0.35);
-          position: relative; overflow: hidden;
+          background: #0056D2;
+          border: none;
+          border-radius: 9999px;
+          padding: 14px;
+          color: #FFFFFF;
+          font-size: 15px;
+          font-weight: 700;
+          cursor: pointer;
+          transition: all 0.15s;
+          box-shadow: 0 4px 14px rgba(0, 86, 210, 0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          margin-top: 10px;
         }
-        .auth-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 32px rgba(37,99,235,0.45); }
+        .auth-btn:hover:not(:disabled) {
+          background: #00419e;
+          transform: translateY(-1px);
+        }
         .auth-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-        .auth-btn-inner { display: flex; align-items: center; justify-content: center; gap: 8px; }
-        .auth-spinner {
-          width: 16px; height: 16px;
-          border: 2px solid rgba(255,255,255,0.3);
-          border-top-color: #fff;
-          border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
 
-        .auth-bottom-link {
-          text-align: center; font-size: 14px;
-          color: rgba(255,255,255,0.4); margin-top: 24px;
+        .auth-message {
+          background: #ECFDF5;
+          border: 1px solid #A7F3D0;
+          color: #065F46;
+          padding: 12px;
+          border-radius: 12px;
+          font-size: 13px;
+          margin-bottom: 18px;
         }
-        .auth-bottom-link a {
-          color: #60a5fa; font-weight: 600;
-          text-decoration: none; margin-left: 4px;
+        .auth-error {
+          background: #FEF2F2;
+          border: 1px solid #FEE2E2;
+          color: #991B1B;
+          padding: 12px;
+          border-radius: 12px;
+          font-size: 13px;
+          margin-bottom: 18px;
         }
-        .auth-bottom-link a:hover { color: #93c5fd; }
-
-        .auth-terms {
-          font-size: 12px; color: rgba(255,255,255,0.3);
-          text-align: center; margin-top: 16px; line-height: 1.6;
-        }
-        .auth-terms a { color: rgba(96,165,250,0.7); text-decoration: none; }
-        .auth-terms a:hover { color: #60a5fa; }
       `}</style>
 
-      {/* Left panel */}
+      {/* Left Panel (Single Screen View - Perfectly Centered & Aligned) */}
       <div className="auth-left">
-        <div className="auth-blob blob1" />
-        <div className="auth-blob blob2" />
-
-        <div className="auth-brand">
-          <div className="auth-brand-icon"><BrandLogo size={48} /></div>
-          <span className="auth-brand-name">MediCore HMS</span>
-        </div>
-
-        <h1 className="auth-hero-title">
-          Join the future of<br />
-          <span>healthcare management.</span>
-        </h1>
-        <p className="auth-hero-sub">
-          Create your account and access a powerful platform designed for modern hospitals and healthcare providers.
-        </p>
-
-        <div className="auth-feature-list">
-          <div className="auth-feature">
-            <div className="auth-feature-icon"><FaChartLine /></div>
-            <div className="auth-feature-text">
-              <div className="auth-feature-title">Real-time Dashboards</div>
-              <div className="auth-feature-desc">Live analytics for appointments, revenue and patient flow</div>
+        <div className="auth-left-inner">
+          <div className="auth-brand">
+            <div className="auth-brand-icon">
+              <FaHeartPulse />
+            </div>
+            <div>
+              <div className="auth-brand-name">
+                PulseCare <span style={{ color: "#0056D2" }}>Clinic</span>
+              </div>
+              <div className="auth-brand-tagline">Multispeciality Clinic</div>
             </div>
           </div>
-          <div className="auth-feature">
-            <div className="auth-feature-icon"><FaBell /></div>
-            <div className="auth-feature-text">
-              <div className="auth-feature-title">Instant Notifications</div>
-              <div className="auth-feature-desc">WebSocket-powered alerts for every critical event</div>
+
+          <div className="auth-hero-copy">
+            <h1 className="auth-hero-title">
+              Join Our Care. <br />
+              <span>Protect Your Health.</span>
+            </h1>
+            <p className="auth-hero-sub">
+              Create your account to book doctor appointments, access prescriptions, and manage medical records digitally.
+            </p>
+          </div>
+
+          {/* Doctor with Stethoscope & Heart */}
+          <div className="doctor-visual-card">
+            <div className="doctor-img-overlay"></div>
+            <img
+              src="/images/doctor-heart.jpg"
+              alt="PulseCare Doctor with Stethoscope and Heart"
+              className="doctor-img"
+            />
+            <div className="doctor-badge-top">
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#10B981", display: "inline-block" }}></span>
+              <FaHeartPulse style={{ color: "#EF4444" }} /> Clinical Care Active
             </div>
           </div>
-          <div className="auth-feature">
-            <div className="auth-feature-icon"><FaLock /></div>
-            <div className="auth-feature-text">
-              <div className="auth-feature-title">Secure by Default</div>
-              <div className="auth-feature-desc">JWT + refresh tokens, role-based access control</div>
+
+          {/* 3 Symmetrical Features Bar (100% Equal Width with Doctor Card) */}
+          <div className="auth-features-bar">
+            <div className="auth-feature-pill">
+              <span className="check">✓</span> Instant Booking
             </div>
-          </div>
-          <div className="auth-feature">
-            <div className="auth-feature-icon"><FaClipboardList /></div>
-            <div className="auth-feature-text">
-              <div className="auth-feature-title">Digital Prescriptions</div>
-              <div className="auth-feature-desc">Generate, sign and share PDF prescriptions instantly</div>
+            <div className="auth-feature-pill">
+              <span className="check">✓</span> Digital Rx
+            </div>
+            <div className="auth-feature-pill">
+              <span className="check">✓</span> 24/7 Helpline
             </div>
           </div>
         </div>
       </div>
 
-      {/* Right panel */}
+      {/* Right Registration Panel */}
       <div className="auth-right">
         <div className="auth-card">
-          <div className="auth-mobile-brand">
-            <div className="auth-mobile-brand-icon"><BrandLogo size={40} /></div>
-            <span className="auth-mobile-brand-name">MediCore HMS</span>
+          <Link href="/login" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#64748B", textDecoration: "none", marginBottom: 16 }}>
+            <FaArrowLeft /> Back to Login
+          </Link>
+
+          <h2 style={{ fontSize: 26, fontWeight: 900, color: "#0F172A", marginBottom: 4 }}>Create an Account</h2>
+          <p style={{ fontSize: 14, color: "#64748B", marginBottom: 20 }}>Join PulseCare Clinic patient &amp; clinical care network</p>
+
+          {message && <div className="auth-message">{message}</div>}
+          {error && <div className="auth-error">{error}</div>}
+
+          {/* Role selector */}
+          <div className="role-selector">
+            {ROLES.map((r) => (
+              <button
+                type="button"
+                key={r.value}
+                className={`role-btn ${form.role === r.value ? "active" : ""}`}
+                onClick={() => setForm((prev) => ({ ...prev, role: r.value }))}
+              >
+                <span style={{ fontSize: 16 }}>{r.icon}</span>
+                <span>{r.label}</span>
+              </button>
+            ))}
           </div>
-
-          <h1 className="auth-card-title">Create your account</h1>
-          <p className="auth-card-sub">Fill in the details below to get started</p>
-
-          {error && <div className="auth-error"><FaExclamationTriangle /> {error}</div>}
-          {message && <div className="auth-success"><FaCheckCircle /> {message}</div>}
 
           <form onSubmit={handleRegister}>
             <div className="auth-field">
-              <label className="auth-label" htmlFor="reg-name">Full name</label>
+              <label className="auth-label">Full Name</label>
               <div className="auth-input-wrap">
-                <span className="auth-input-icon"><FaUser /></span>
+                <FaUser className="auth-input-icon" />
                 <input
-                  id="reg-name" type="text" name="fullName"
-                  value={form.fullName} onChange={handleChange}
-                  placeholder="Dr. Jane Smith"
-                  className="auth-input has-icon"
-                  required autoComplete="name"
+                  type="text"
+                  name="fullName"
+                  value={form.fullName}
+                  onChange={handleChange}
+                  placeholder="e.g. John Doe"
+                  className="auth-input"
+                  required
                 />
               </div>
             </div>
 
             <div className="auth-field">
-              <label className="auth-label" htmlFor="reg-email">Email address</label>
+              <label className="auth-label">Email Address</label>
               <div className="auth-input-wrap">
-                <span className="auth-input-icon"><FaEnvelope /></span>
+                <FaEnvelope className="auth-input-icon" />
                 <input
-                  id="reg-email" type="email" name="email"
-                  value={form.email} onChange={handleChange}
-                  placeholder="you@example.com"
-                  className="auth-input has-icon"
-                  required autoComplete="email" disabled={otpSent}
+                  type="email"
+                  name="email"
+                  value={form.email}
+                  onChange={handleChange}
+                  placeholder="john@example.com"
+                  className="auth-input"
+                  required
+                  disabled={otpSent}
                 />
               </div>
-              {otpSent && <button type="button" className="auth-email-change" onClick={() => { setOtpSent(false); setOtp(""); setMessage(""); }}>Use a different email</button>}
             </div>
 
-            {otpSent && <div className="auth-field">
-              <label className="auth-label" htmlFor="reg-otp">Email verification code</label>
-              <div className="auth-input-wrap">
-                <span className="auth-input-icon"><FaShieldAlt /></span>
-                <input id="reg-otp" type="text" inputMode="numeric" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="Enter 6-digit code" className="auth-input has-icon" required pattern="\d{6}" autoComplete="one-time-code" />
-              </div>
-            </div>}
-
             <div className="auth-field">
-              <label className="auth-label" htmlFor="reg-password">Password</label>
+              <label className="auth-label">Password</label>
               <div className="auth-input-wrap">
-                <span className="auth-input-icon"><FaLock /></span>
+                <FaLock className="auth-input-icon" />
                 <input
-                  id="reg-password"
                   type={showPassword ? "text" : "password"}
                   name="password"
-                  value={form.password} onChange={handleChange}
-                  placeholder="Min. 8 characters"
-                  className="auth-input has-icon has-eye"
-                  required minLength={8} autoComplete="new-password"
+                  value={form.password}
+                  onChange={handleChange}
+                  placeholder="Create a strong password"
+                  className="auth-input"
+                  style={{ paddingRight: 44 }}
+                  required
                 />
                 <button
-                  type="button" className="auth-eye-btn"
+                  type="button"
+                  className="auth-eye-btn"
                   onClick={() => setShowPassword(!showPassword)}
                   tabIndex={-1}
                 >
@@ -429,39 +520,40 @@ export default function RegisterPage() {
               </div>
             </div>
 
-            <div>
-              <span className="auth-role-label">I am a...</span>
-              <div className="auth-role-grid">
-                {ROLES.map((r) => (
-                  <button
-                    key={r.value} type="button"
-                    className={`auth-role-btn ${form.role === r.value ? "active" : ""}`}
-                    onClick={() => setForm((p) => ({ ...p, role: r.value }))}
-                  >
-                    <span className="auth-role-icon">{r.icon}</span>
-                    {r.label}
-                  </button>
-                ))}
+            {otpSent && (
+              <div className="auth-field">
+                <label className="auth-label">6-Digit Verification Code</label>
+                <div className="auth-input-wrap">
+                  <FaShieldHalved className="auth-input-icon" style={{ color: "#0056D2" }} />
+                  <input
+                    type="text"
+                    name="otp"
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                    placeholder="Enter code sent to email"
+                    className="auth-input"
+                    maxLength={6}
+                    required
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <button type="submit" className="auth-btn" disabled={loading}>
-              <span className="auth-btn-inner">
-                {loading
-                  ? <><span className="auth-spinner" /> {otpSent ? "Verifying..." : "Sending code..."}</>
-                  : otpSent ? "Verify & Create Account" : "Send Verification Code"}
-              </span>
+              {loading
+                ? "Processing..."
+                : otpSent
+                ? "Complete Registration"
+                : "Send Verification Code"}
+              <FaArrowRight />
             </button>
           </form>
 
-          <div className="auth-terms">
-            By registering you agree to our{" "}
-            <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
-          </div>
-
-          <div className="auth-bottom-link">
-            Already have an account?
-            <Link href="/login">Sign in &rarr;</Link>
+          <div style={{ textAlign: "center", marginTop: 20, fontSize: 13.5, color: "#64748B" }}>
+            Already have an account?{" "}
+            <Link href="/login" style={{ color: "#0056D2", fontWeight: 700, textDecoration: "none" }}>
+              Sign In &rarr;
+            </Link>
           </div>
         </div>
       </div>

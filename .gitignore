@@ -1,0 +1,19 @@
+# Local databases and runtime data
+.data/
+*.log
+
+# Environment variables
+.env
+backend/.env
+frontend/.env.local
+frontend/.env*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+backend/target/
+frontend/.next/
+frontend/out/
+node_modules/

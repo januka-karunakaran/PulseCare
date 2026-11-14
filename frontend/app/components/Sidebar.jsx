@@ -14,10 +14,8 @@ import {
   FaMoneyBillWave,
   FaUserPlus,
   FaUserCog,
-  FaStethoscope,
   FaCalendarAlt,
   FaHeartbeat,
-  FaSearch,
 } from "react-icons/fa";
 import { clearSession, getRefreshToken, getRole } from "@/utils/auth";
 import { logoutUser } from "@/services/authService";
@@ -86,16 +84,22 @@ export default function Sidebar() {
     }
   };
 
-  const brandLabel = role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : "Patient Portal";
+  const brandLabel =
+    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : "Patient Portal";
 
   return (
     <aside className="sidebar">
       {/* Brand */}
       <div className="sidebar-brand">
-        <div className="sidebar-brand-icon"><BrandLogo size={34} /></div>
+        <div className="sidebar-brand-icon">
+          <BrandLogo size={34} />
+        </div>
         <div>
-          <div className="sidebar-brand-name">MediCore</div>
-          <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500 }}>{brandLabel}</div>
+          <div className="sidebar-brand-name flex items-center gap-1">
+            <span>PulseCare</span>
+            <span style={{ color: "var(--primary)" }}>Clinic</span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>{brandLabel}</div>
         </div>
       </div>
 
@@ -137,4 +141,3 @@ export default function Sidebar() {
     </aside>
   );
 }
-

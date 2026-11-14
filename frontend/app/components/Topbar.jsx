@@ -37,8 +37,8 @@ export default function Topbar({ title, subtitle }) {
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>
               {user?.fullName || "User"}
             </div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              {role || "â€”"}
+            <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              {role || "STAFF"}
             </div>
           </div>
         </div>
@@ -46,4 +46,3 @@ export default function Topbar({ title, subtitle }) {
     </div>
   );
 }
-

@@ -32,7 +32,9 @@ public class SecurityConfig {
                 .cors(cors -> {})
                 .authorizeHttpRequests(auth -> auth
                     .requestMatchers("/api/auth/**").permitAll()
+                    .requestMatchers("/api/health/**").permitAll()
                     .requestMatchers("/ws/**").permitAll()
+                    .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
 
                     // Doctor directory is needed when patients book appointments.
                     .requestMatchers(HttpMethod.GET, "/api/doctors").hasAnyRole(ADMIN, DOCTOR, PATIENT)
