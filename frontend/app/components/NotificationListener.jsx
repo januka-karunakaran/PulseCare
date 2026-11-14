@@ -12,42 +12,70 @@ export default function NotificationListener({ onNotificationReceived }) {
 
   useEffect(() => {
     if (!userId) return;
-    
-    const client = new Client({
-      webSocketFactory: () => new SockJS(`${WS_BASE}/ws/notifications`),
-      debug: (str) => {
-        console.log(str);
-      },
-      reconnectDelay: 5000,
-      heartbeatIncoming: 4000,
-      heartbeatOutgoing: 4000,
-    });
 
-    client.onConnect = (frame) => {
-      console.log("Connected to WebSocket: " + frame);
-      
-      // Subscribe to user's private notification queue
-      // Spring convertAndSendToUser sends to /user/{username}/queue/notifications
-      client.subscribe(`/user/${userId}/queue/notifications`, (message) => {
-        const notification = JSON.parse(message.body);
-        console.log("New notification:", notification);
-        if (onNotificationReceived) {
-          onNotificationReceived(notification);
-        }
+    // SockJS is an HTTP fallback transport and strictly requires http:// or https:// scheme
+    const rawWsUrl = WS_BASE || "http://localhost:8080";
+    const httpSchemeUrl = rawWsUrl
+      .replace(/^ws:\/\//i, "http://")
+      .replace(/^wss:\/\//i, "https://")
+      .replace(/\/+$/, "");
+
+    const endpoint = httpSchemeUrl.endsWith("/ws/notifications")
+      ? httpSchemeUrl
+      : `${httpSchemeUrl}/ws/notifications`;
+
+    let client;
+    try {
+      client = new Client({
+        webSocketFactory: () => new SockJS(endpoint),
+        debug: (str) => {
+          if (process.env.NODE_ENV === "development") {
+            console.log("[STOMP]", str);
+          }
+        },
+        reconnectDelay: 5000,
+        heartbeatIncoming: 4000,
+        heartbeatOutgoing: 4000,
       });
-    };
 
-    client.onStompError = (frame) => {
-      console.error("Broker reported error: " + frame.headers["message"]);
-      console.error("Additional details: " + frame.body);
-    };
+      client.onConnect = (frame) => {
+        console.log("Connected to WebSocket notifications:", frame?.headers?.["user-name"] || userId);
 
-    client.activate();
-    stompClientRef.current = client;
+        // Subscribe to user's private notification queue
+        // Spring convertAndSendToUser sends to /user/{username}/queue/notifications
+        client.subscribe(`/user/${userId}/queue/notifications`, (message) => {
+          try {
+            const notification = JSON.parse(message.body);
+            if (onNotificationReceived) {
+              onNotificationReceived(notification);
+            }
+          } catch (err) {
+            console.warn("Failed to parse incoming notification:", err);
+          }
+        });
+      };
+
+      client.onStompError = (frame) => {
+        console.warn("STOMP Broker reported error:", frame.headers?.["message"]);
+      };
+
+      client.onWebSocketError = (event) => {
+        console.warn("WebSocket connection warning (non-fatal):", event?.type || event);
+      };
+
+      client.activate();
+      stompClientRef.current = client;
+    } catch (err) {
+      console.warn("Failed to initialize WebSocket client:", err);
+    }
 
     return () => {
       if (stompClientRef.current) {
-        stompClientRef.current.deactivate();
+        try {
+          stompClientRef.current.deactivate();
+        } catch {
+          // Ignore cleanup errors
+        }
       }
     };
   }, [onNotificationReceived, userId]);
