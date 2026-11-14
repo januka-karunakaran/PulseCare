@@ -94,7 +94,7 @@ flowchart TD
 
 ---
 
-## 📁 Enterprise Repository Layout
+## 📁 Repository Layout
 
 ```
 HospitalManagementSystem/
