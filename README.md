@@ -165,8 +165,8 @@ Run the entire full-stack enterprise platform (MongoDB, Spring Boot Backend, Nex
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/januka-karunakaran/Hospital-Management-System.git
-cd Hospital-Management-System
+git clone https://github.com/januka-karunakaran/PulseCare.git
+cd PulseCare
 
 # 2. Launch the container cluster
 docker compose up --build -d
