@@ -14,6 +14,8 @@ import java.util.List;
 public class Patient {
 
     @Id
+    private String id;
+
     private String userId;
 
     private String fullName;
@@ -25,6 +27,14 @@ public class Patient {
     private String address;
 
     private List<FamilyMember> familyMembers;
+
+    public String getId() {
+        return id != null ? id : userId;
+    }
+
+    public String getUserId() {
+        return userId != null ? userId : id;
+    }
 
     @Data
     @NoArgsConstructor

@@ -140,12 +140,15 @@ public class AppointmentServiceImpl implements AppointmentService {
         if (patientId == null || patientId.isBlank()) {
             return List.of();
         }
-        java.util.Set<String> patientIds = new java.util.HashSet<>();
+        java.util.Set<String> patientIds = new java.util.LinkedHashSet<>();
         patientIds.add(patientId);
+
         patientRepository.findById(patientId).ifPresent(p -> {
+            if (p.getId() != null) patientIds.add(p.getId());
             if (p.getUserId() != null) patientIds.add(p.getUserId());
         });
         patientRepository.findByUserId(patientId).ifPresent(p -> {
+            if (p.getId() != null) patientIds.add(p.getId());
             if (p.getUserId() != null) patientIds.add(p.getUserId());
         });
 

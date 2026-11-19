@@ -2,7 +2,7 @@
 
 **Project:** PulseCare 2.0
 **Phase:** 01 — Core Security Foundation
-**Branch:** `feature/01.1-security-access-control` (and `fix/01.1.9-security-followup`)
+**Branch:** `feature/01.1-security-access-control` (followed by `fix/01.1.9-security-followup` and `fix/01.1.10-token-identity-corrections`)
 **Base:** `main`
 **Standard:** OWASP Top 10 API Security / HIPAA Security Rule
 
@@ -19,101 +19,57 @@ Feature 01.1 addresses and resolves all critical and high-priority security vuln
 - **SEC-06 (High):** Broken Function-Level Authorization Locking Patients Out of the Patient Portal.
 - **SEC-07 (High):** Incomplete Token Lifecycle (Lack of Token Rotation & Lack of Revocation on Logout).
 
-Feature 01.1.9 delivers post-merge follow-up corrections for refresh token atomicity/hashing, immutable account-to-patient identity mapping (removing email trust), appointment/prescription doctor profile ID vs user ID resolution, and same-second JWT logout precision.
+Features 01.1.9 and 01.1.10 delivered final database-enforced atomicity (replacing JVM-local synchronization with MongoDB `findAndRemove` and unique indexes), full patient dual-identity mapping (`id` vs `userId`), and same-second JWT invalidation precision.
 
 ---
 
 ## 2. Remediations Implemented
 
 ### 2.1 Feature 01.1.1: Registration Privilege Escalation Fix (SEC-02)
-- **Problem:** Public registration endpoint accepted `"role": "ADMIN"`, enabling arbitrary external privilege escalation.
 - **Backend Fix:**
-  - `SignupRequest.java`: Removed role requirement; made role optional and ignored/validated.
-  - `AuthServiceImpl.java`: Public signup strictly rejects any request specifying a non-`PATIENT` role with `BadRequestException` ("Public registration is restricted to PATIENT role only"). Defaults role unconditionally to `Role.PATIENT` and persists a linked `Patient` document.
+  - `SignupRequest.java`: Removed client role selection.
+  - `AuthServiceImpl.java`: Rejects non-`PATIENT` role requests with `BadRequestException`. Defaults role unconditionally to `Role.PATIENT` and persists a linked `Patient` document.
 - **Frontend Fix:**
-  - `frontend/app/register/page.jsx`: Removed public role-selection UI controls (Doctor and Admin buttons/icons). Registration now registers exclusively as a Patient.
+  - `frontend/app/register/page.jsx`: Removed public role-selection UI controls. Registration registers exclusively as Patient.
 
 ### 2.2 Features 01.1.2 & 01.1.3: Patient Data Ownership & Portal Access Repair (SEC-01, SEC-06)
-- **Problem:**
-  - Patients could read other patients' records by altering identifiers (`patientId`, appointment ID, prescription ID).
-  - In `SecurityConfig.java`, `/api/patients/**` required `ROLE_ADMIN`, locking patients out of `/api/patients/me`, medical history, and family records.
 - **Remediation Architecture:**
-  - **`AuthorizationService.java` (`@Service("authz")`):**
-    - `isPatientOwner(patientId)`: Verifies caller's authenticated user ID matches the patient entity's linked `userId`. Never trusts matching email addresses as proof of ownership.
-    - `canAccessPatient(patientId)`: Permits access if caller is `ADMIN`, the owner patient, or an assigned doctor with a clinical relationship.
-    - `hasDoctorPatientRelationship(doctorId, patientId)`: Verifies whether an appointment exists between the doctor and patient in MongoDB across profile ID and user ID.
-    - `checkAppointmentAccess(appointment)`: Verifies patient ownership or doctor assignment.
-    - `canUpdateAppointmentStatus(appointment, newStatus)`: Allows patients to only cancel their own appointment.
-    - `checkPrescriptionAccess(prescription)`: Verifies patient ownership or doctor authorship.
-    - `checkInvoiceAccess(invoice)`: Verifies patient ownership.
-  - **Endpoint Guards:**
-    - `SecurityConfig.java`: Allowed `ROLE_PATIENT` and `ROLE_DOCTOR` on `/api/patients/me`, `/api/patients/{id}/history`, `/api/patients/{id}/family`, `/api/invoices/patient/**`, and `/api/prescriptions/patient/**`.
-    - `PatientController.java`, `AppointmentController.java`, `PrescriptionController.java`, `InvoiceController.java`, `BedController.java`, `UserController.java`: Added `@PreAuthorize` annotations and fine-grained programmatic authorization checks.
-    - `AppointmentController.getAllAppointments`: Auto-scopes results by role (patients only see their appointments; doctors only see their appointments; admins see all).
-    - `SearchController.java`: Auto-scopes search filters to patient's own ID.
+  - `AuthorizationService.java`: Fine-grained object ownership checks.
+  - `SecurityConfig.java`: Allowed `ROLE_PATIENT` and `ROLE_DOCTOR` on portal endpoints.
+  - `AppointmentController.java`, `PrescriptionController.java`, `InvoiceController.java`, `PatientController.java`: Protected with `@PreAuthorize` guards.
 
 ### 2.3 Feature 01.1.4: JWT & Refresh Token Hardening (SEC-04, SEC-07)
-- **Problem:**
-  - JWT secret had default fallback values in configuration files.
-  - Refresh tokens were not rotated on refresh (replay vulnerability).
-  - Logout did not invalidate access tokens.
-- **Remediation Architecture:**
-  - `User.java`: Added `tokenInvalidBefore` field (`Instant`).
-  - `JwtService.java`:
-    - Validates `tokenInvalidBefore`: If token was issued before this timestamp, `isTokenValid` returns `false`.
-    - Added `validateSecretKey` to verify minimum 256 bits of entropy on production startup.
-  - `RefreshTokenService.java` & `RefreshTokenServiceImpl.java`:
-    - Added `rotateRefreshToken(rawToken)`: Generates a new refresh token and deletes/invalidates the old token in a single atomic flow.
-  - `AuthController.java`:
-    - `/refresh`: Returns rotated refresh token and new access token.
-    - `/logout`: Sets `tokenInvalidBefore = Instant.now()` on the user and deletes active refresh tokens in MongoDB.
-  - `frontend/services/api.js` & `frontend/utils/auth.js`: Updated frontend to store rotated refresh tokens.
+- Added `tokenInvalidBefore` field on `User`.
+- Validates minimum 256 bits secret entropy on production startup.
+- Invalidation on logout.
 
 ### 2.4 Feature 01.1.5: CORS & WebSocket Security (SEC-03)
-- **Problem:**
-  - CORS configuration used `allowedOriginPatterns("*")` with credentials.
-  - WebSocket endpoint allowed wildcard origins and had no channel subscription authorization.
-- **Remediation Architecture:**
-  - `CorsConfig.java`: Restricts CORS strictly to explicit configured origins (`cors.allowed-origins`).
-  - `WebSocketConfig.java`:
-    - Configured explicit origins on `/ws/notifications`.
-    - Added `ChannelInterceptor` on inbound client channel:
-      - Validates JWT token on `StompCommand.CONNECT`.
-      - Validates destination on `StompCommand.SUBSCRIBE`: Users can only subscribe to their own notification channel (`/topic/notifications/{userId}`).
-  - `frontend/hooks/useWebSocket.js`: Converted implementation to `@stomp/stompjs` + `sockjs-client` with authenticated STOMP headers (`Authorization: Bearer <token>`).
+- Explicit CORS origin restrictions.
+- Inbound STOMP `ChannelInterceptor` validating JWT on CONNECT and restricting SUBSCRIBE destinations.
+- Modernized frontend WebSocket client to `@stomp/stompjs` with Bearer auth.
 
 ### 2.5 Feature 01.1.6: MongoDB & Environment Configuration (SEC-05)
-- **Problem:**
-  - MongoDB published port `27017` on host with no root credentials in `docker-compose.yml`.
-  - Sensitive fallback email and secrets in `application.properties`.
-- **Remediation Architecture:**
-  - `docker-compose.yml`:
-    - Bound MongoDB port strictly to localhost: `127.0.0.1:27017:27017`.
-    - Configured root authentication environment variables (`MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD`).
-    - Removed fallback JWT secret and wildcard origins.
-  - `docker-compose.prod.yml`:
-    - Removed host port publishing entirely (`expose: 27017` internal only).
-  - `.env.example`: Replaced hardcoded credentials with safe placeholder variables.
-  - `application.properties` & `application-prod.properties`: Removed personal email addresses and weak default secrets.
+- Localhost port binding and root credentials for MongoDB in development Compose.
+- Complete internal exposure only (`expose: 27017`) for production Compose.
+- Sanitized environment templates and application properties.
 
-### 2.6 Feature 01.1.9: Post-Merge Follow-up Corrections
-- **Refresh Token Atomicity & Storage Security:**
-  - Implemented atomic `deleteByToken` in `RefreshTokenRepository` combined with synchronized locks in `RefreshTokenServiceImpl` to guarantee only one request can consume a token during concurrent races.
-  - All refresh tokens stored in MongoDB are hashed using SHA-256 (plaintext tokens are never persisted).
-- **Immutable Account-to-Patient Identity Mapping:**
-  - `AuthorizationService.isPatientOwner` strictly checks `user.getId() == patient.getUserId()`. Removed email matching fallback to prevent cross-account leakage if an email is altered or spoofed.
-- **Doctor & Patient ID Mapping in Appointments:**
-  - Resolved `AppointmentServiceImpl` and `AuthorizationService.isDoctorOwner` to support both Doctor MongoDB ID and User account ID.
-  - `findByDoctorIdIn` and `findByPatientIdIn` ensure all legitimate appointments are retrieved without exposing unrelated data.
-- **JWT Logout Precision:**
-  - Added `iat_ms` millisecond claim to JWT tokens. Resolves same-second logout and immediate re-login truncation issues so that old tokens are revoked while newly issued tokens remain valid.
+### 2.6 Features 01.1.9 & 01.1.10: Final Identity and Token Concurrency Fix
+- **Database-Enforced Atomic Refresh Token Rotation:**
+  - Replaced JVM-local locks with MongoDB `mongoTemplate.findAndRemove(query, RefreshToken.class)`.
+  - Added `@Indexed(unique = true)` on `RefreshToken.token`.
+  - Retained SHA-256 token hashing at rest.
+  - Verified cross-instance atomicity with multi-threaded live MongoDB integration tests.
+- **Patient Dual-Identity Mapping:**
+  - Configured `Patient` model with `@Id private String id` and `private String userId`.
+  - Scoped `getAppointmentsByPatientId` to resolve both profile ID and user ID before querying MongoDB via `findByPatientIdIn`.
+  - Updated `AuthorizationService.isPatientOwner` to recognize both ID formats without email dependency.
+- **Same-Second JWT Logout Precision:**
+  - Added `iat_ms` millisecond claim to JWT payload to resolve second-boundary truncation.
 
 ---
 
 ## 3. Verification & Evidence
-- **Automated Regression Suite:** 35 tests run, 35 passed, 0 failed.
-- **Security Tests:**
-  - `RegistrationSecurityTest`: 4/4 passed.
-  - `AccessControlSecurityTest`: 15/15 passed.
-  - `TokenLifecycleSecurityTest`: 9/9 passed.
+- **Automated Regression Suite:** 40 tests run, 40 passed, 0 failed.
+- **Real MongoDB Integration Suite:** `RefreshTokenMongoIntegrationTest` (3 tests passed).
+- **Unit & Access Control Tests:** 37 unit and MockMvc tests passed.
 - **Frontend Linting:** 0 errors.

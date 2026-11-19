@@ -13,6 +13,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
@@ -26,11 +28,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 public class TokenLifecycleSecurityTest {
+
+    @Mock
+    private MongoTemplate mongoTemplate;
 
     @Mock
     private RefreshTokenRepository refreshTokenRepository;
@@ -58,7 +63,7 @@ public class TokenLifecycleSecurityTest {
                 .expiryDate(Instant.now().plusSeconds(3600))
                 .build();
 
-        when(refreshTokenRepository.deleteByToken(anyString())).thenReturn(Optional.of(existing));
+        when(mongoTemplate.findAndRemove(any(Query.class), eq(RefreshToken.class))).thenReturn(existing);
         when(refreshTokenRepository.save(any(RefreshToken.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         RefreshToken rotated = refreshTokenService.rotateRefreshToken(oldToken);
@@ -66,14 +71,14 @@ public class TokenLifecycleSecurityTest {
         assertNotNull(rotated);
         assertNotEquals(oldToken, rotated.getToken());
         assertEquals("user-123", rotated.getUserId());
-        verify(refreshTokenRepository).deleteByToken(anyString());
+        verify(mongoTemplate).findAndRemove(any(Query.class), eq(RefreshToken.class));
         verify(refreshTokenRepository).save(any(RefreshToken.class));
     }
 
     @Test
     public void rotateRefreshToken_ReplayOfRevokedToken_ThrowsBadRequestException() {
         String consumedToken = "already-consumed-token";
-        when(refreshTokenRepository.deleteByToken(anyString())).thenReturn(Optional.empty());
+        when(mongoTemplate.findAndRemove(any(Query.class), eq(RefreshToken.class))).thenReturn(null);
 
         BadRequestException ex = assertThrows(BadRequestException.class, () ->
                 refreshTokenService.rotateRefreshToken(consumedToken));
@@ -91,7 +96,7 @@ public class TokenLifecycleSecurityTest {
                 .expiryDate(Instant.now().minusSeconds(100))
                 .build();
 
-        when(refreshTokenRepository.deleteByToken(anyString())).thenReturn(Optional.of(expired));
+        when(mongoTemplate.findAndRemove(any(Query.class), eq(RefreshToken.class))).thenReturn(expired);
 
         BadRequestException ex = assertThrows(BadRequestException.class, () ->
                 refreshTokenService.rotateRefreshToken(expiredToken));
@@ -110,11 +115,11 @@ public class TokenLifecycleSecurityTest {
                 .build();
 
         AtomicBoolean consumed = new AtomicBoolean(false);
-        when(refreshTokenRepository.deleteByToken(anyString())).thenAnswer(invocation -> {
+        when(mongoTemplate.findAndRemove(any(Query.class), eq(RefreshToken.class))).thenAnswer(invocation -> {
             if (consumed.compareAndSet(false, true)) {
-                return Optional.of(existing);
+                return existing;
             }
-            return Optional.empty();
+            return null;
         });
         when(refreshTokenRepository.save(any(RefreshToken.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
