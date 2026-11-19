@@ -44,12 +44,14 @@ public class JwtService {
     public String generateToken(UserDetails userDetails, String role) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("role", role);
+        long nowMs = System.currentTimeMillis();
+        claims.put("iat_ms", nowMs);
 
         return Jwts.builder()
                 .claims(claims)
                 .subject(userDetails.getUsername())
-                .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + jwtExpiration))
+                .issuedAt(new Date(nowMs))
+                .expiration(new Date(nowMs + jwtExpiration))
                 .signWith(getSignInKey())
                 .compact();
     }
@@ -66,6 +68,16 @@ public class JwtService {
         return extractClaim(token, Claims::getIssuedAt);
     }
 
+    public Long extractIssuedAtMs(String token) {
+        Claims claims = extractAllClaims(token);
+        Object iatMsObj = claims.get("iat_ms");
+        if (iatMsObj instanceof Number num) {
+            return num.longValue();
+        }
+        Date iat = claims.getIssuedAt();
+        return iat != null ? iat.getTime() : null;
+    }
+
     public boolean isTokenValid(String token, UserDetails userDetails) {
         final String username = extractUsername(token);
         if (!username.equals(userDetails.getUsername()) || isTokenExpired(token)) {
@@ -74,9 +86,12 @@ public class JwtService {
 
         if (userDetails instanceof com.hospital.backend.model.User user) {
             if (user.getTokenInvalidBefore() != null) {
-                Date issuedAt = extractIssuedAt(token);
-                if (issuedAt != null && issuedAt.toInstant().isBefore(user.getTokenInvalidBefore())) {
-                    return false;
+                Long issuedAtMs = extractIssuedAtMs(token);
+                if (issuedAtMs != null) {
+                    long invalidBeforeMs = user.getTokenInvalidBefore().toEpochMilli();
+                    if (issuedAtMs < invalidBeforeMs) {
+                        return false;
+                    }
                 }
             }
         }

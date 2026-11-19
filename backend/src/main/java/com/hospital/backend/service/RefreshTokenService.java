@@ -7,4 +7,5 @@ public interface RefreshTokenService {
     RefreshToken verifyToken(String token);
     RefreshToken rotateRefreshToken(String token);
     void deleteByUserId(String userId);
+    void deleteByToken(String token);
 }

@@ -44,7 +44,7 @@ public class PrescriptionController {
     }
 
     @GetMapping("/doctor/{doctorId}")
-    @PreAuthorize("hasRole('ADMIN') or (hasRole('DOCTOR') and @authz.isCurrentUser(#doctorId))")
+    @PreAuthorize("hasRole('ADMIN') or @authz.isDoctorOwner(#doctorId)")
     public ResponseEntity<List<Prescription>> getPrescriptionsByDoctorId(@PathVariable String doctorId) {
         return ResponseEntity.ok(prescriptionService.getPrescriptionsByDoctorId(doctorId));
     }

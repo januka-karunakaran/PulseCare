@@ -115,20 +115,49 @@ public class AppointmentServiceImpl implements AppointmentService {
 
     @Override
     public List<Appointment> getAppointmentsByDoctorId(String doctorId) {
-        String appointmentDoctorId = doctorRepository.findByUserId(doctorId)
-                .map(doctor -> doctor.getId())
-                .orElse(doctorId);
-        return appointmentRepository.findByDoctorId(appointmentDoctorId);
+        if (doctorId == null || doctorId.isBlank()) {
+            return List.of();
+        }
+        java.util.Set<String> doctorIds = new java.util.HashSet<>();
+        doctorIds.add(doctorId);
+        doctorRepository.findById(doctorId).ifPresent(d -> {
+            if (d.getId() != null) doctorIds.add(d.getId());
+            if (d.getUserId() != null) doctorIds.add(d.getUserId());
+        });
+        doctorRepository.findByUserId(doctorId).ifPresent(d -> {
+            if (d.getId() != null) doctorIds.add(d.getId());
+            if (d.getUserId() != null) doctorIds.add(d.getUserId());
+        });
+
+        if (doctorIds.size() > 1) {
+            return appointmentRepository.findByDoctorIdIn(List.copyOf(doctorIds));
+        }
+        return appointmentRepository.findByDoctorId(doctorId);
     }
 
     @Override
     public List<Appointment> getAppointmentsByPatientId(String patientId) {
+        if (patientId == null || patientId.isBlank()) {
+            return List.of();
+        }
+        java.util.Set<String> patientIds = new java.util.HashSet<>();
+        patientIds.add(patientId);
+        patientRepository.findById(patientId).ifPresent(p -> {
+            if (p.getUserId() != null) patientIds.add(p.getUserId());
+        });
+        patientRepository.findByUserId(patientId).ifPresent(p -> {
+            if (p.getUserId() != null) patientIds.add(p.getUserId());
+        });
+
+        if (patientIds.size() > 1) {
+            return appointmentRepository.findByPatientIdIn(List.copyOf(patientIds));
+        }
         return appointmentRepository.findByPatientId(patientId);
     }
 
     @Override
     public List<Appointment> getMyAppointments(String patientId) {
-        return appointmentRepository.findByPatientId(patientId);
+        return getAppointmentsByPatientId(patientId);
     }
 
     @Override

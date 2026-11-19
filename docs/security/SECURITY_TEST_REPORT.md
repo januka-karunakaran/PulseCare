@@ -1,77 +1,65 @@
 # PulseCare 2.0 — Security Test Report
 
 **Execution Date:** 2026-11-19
-**Feature Branch:** `feature/01.1-security-access-control`
+**Feature Branch:** `fix/01.1.9-security-followup`
 **Test Suite Target:** Spring Boot Backend Integration & Security Tests
 **Execution Environment:** Windows 11, JDK 17.0.12, Maven Wrapper, Spring Boot 3.5.6
-**Result:** **29 TESTS RUN, 0 FAILURES, 0 ERRORS, 0 SKIPPED (BUILD SUCCESS)**
+**Result:** **35 TESTS RUN, 0 FAILURES, 0 ERRORS, 0 SKIPPED (BUILD SUCCESS)**
 
 ---
 
 ## 1. Executive Summary
 
-All critical security vulnerabilities identified in Feature 00.1 baseline audit (SEC-01 through SEC-07) have been verified with automated regression tests. The entire backend test suite was executed via `./mvnw test` and completed with zero failures.
+Feature 01.1.9 applied critical post-merge security and functional corrections across refresh token atomicity, account-to-patient identity mapping, appointment identifier mapping, and same-second JWT logout precision.
+
+The updated test suite now executes **35 tests**, all passing with zero failures.
 
 | Test Class | Category | Tests Executed | Passed | Failed | Status |
 |---|---|---|---|---|---|
 | `RegistrationSecurityTest` | Privilege Escalation (SEC-02) | 4 | 4 | 0 | **PASS** |
-| `AccessControlSecurityTest` | BOLA / IDOR / Portal Lock-out (SEC-01, SEC-06) | 12 | 12 | 0 | **PASS** |
-| `TokenLifecycleSecurityTest` | Token Rotation, Invalidation, Revocation (SEC-04, SEC-07) | 6 | 6 | 0 | **PASS** |
+| `AccessControlSecurityTest` | BOLA / IDOR / Identity Mapping (SEC-01, SEC-06) | 15 | 15 | 0 | **PASS** |
+| `TokenLifecycleSecurityTest` | Rotation, Concurrency, Invalidation (SEC-04, SEC-07) | 9 | 9 | 0 | **PASS** |
 | `PrescriptionControllerTest` | Prescription Endpoint & PDF Generation | 1 | 1 | 0 | **PASS** |
 | `JwtServiceTest` | JWT Signing & Parsing | 1 | 1 | 0 | **PASS** |
 | `AppointmentServiceTest` | Appointment Business Logic | 1 | 1 | 0 | **PASS** |
 | `AuthServiceTest` | Authentication Logic | 2 | 2 | 0 | **PASS** |
 | `BackendApplicationTests` | Spring Boot Context Loading | 2 | 2 | 0 | **PASS** |
-| **Total** | | **29** | **29** | **0** | **100% PASS** |
+| **Total** | | **35** | **35** | **0** | **100% PASS** |
 
 ---
 
-## 2. Test Class Details & Security Evidence
+## 2. Post-Merge Follow-up Verification Details (Feature 01.1.9)
 
-### A. `RegistrationSecurityTest` (SEC-02 Verification)
-- **File:** `backend/src/test/java/com/hospital/backend/security/RegistrationSecurityTest.java`
-- **Tests Executed:**
-  1. `publicSignup_AsPatient_Succeeds`: Verified public registration creates `Role.PATIENT` with HTTP 201 Created.
-  2. `publicSignup_AttemptingAdminRole_IsRejected`: Submitting `"role": "ADMIN"` throws `BadRequestException` and returns HTTP 400.
-  3. `publicSignup_AttemptingDoctorRole_IsRejected`: Submitting `"role": "DOCTOR"` throws `BadRequestException` and returns HTTP 400.
-  4. `publicSignup_WithNoRoleSpecified_DefaultsToPatient`: Submitting registration without a role creates `Role.PATIENT` with HTTP 201 Created.
+### A. Refresh Token Concurrency & Atomicity (SEC-07 Follow-up)
+- **Files:** `RefreshTokenServiceImpl.java`, `RefreshTokenRepository.java`, `TokenLifecycleSecurityTest.java`
+- **Tests Added/Verified:**
+  1. `concurrentRefreshRequests_OnlyOneSucceeds_OthersFail`: Simulates 10 concurrent threads racing to consume the exact same refresh token. Verified that exactly 1 request succeeds in rotation, while 9 requests are rejected with `BadRequestException` ("Invalid or revoked refresh token").
+  2. `createRefreshToken_StoresHashedTokenInDatabase`: Verified that token values are hashed using SHA-256 before being persisted to MongoDB (raw tokens are never stored at rest in plaintext).
+  3. `rotateRefreshToken_ReplayOfRevokedToken_ThrowsBadRequestException`: Verified replay attacks fail.
+  4. `rotateRefreshToken_ExpiredToken_ThrowsBadRequestExceptionAndCleansUp`: Verified expired tokens are purged.
 
-### B. `AccessControlSecurityTest` (SEC-01 & SEC-06 Verification)
-- **File:** `backend/src/test/java/com/hospital/backend/security/AccessControlSecurityTest.java`
-- **Tests Executed:**
-  1. `patientPortal_GetMe_SucceedsForPatient`: Patient calling `/api/patients/me` returns HTTP 200 and own profile (`SEC-06` fix).
-  2. `patient_AccessOwnMedicalHistory_Succeeds`: Patient calling `/api/patients/{ownId}/history` returns HTTP 200.
-  3. `patient_AccessOtherPatientMedicalHistory_Forbidden`: Patient A calling `/api/patients/{patientBId}/history` returns HTTP 403 Forbidden (`SEC-01` fix).
-  4. `patient_AccessOwnFamilyMembers_Succeeds`: Patient calling `/api/patients/{ownId}/family` returns HTTP 200.
-  5. `patient_AccessOtherPatientFamilyMembers_Forbidden`: Patient A calling `/api/patients/{patientBId}/family` returns HTTP 403 Forbidden (`SEC-01` fix).
-  6. `patient_ViewOwnAppointment_Succeeds`: Patient calling `/api/appointments/{ownAppointmentId}` returns HTTP 200.
-  7. `patient_ViewOtherPatientAppointment_Forbidden`: Patient A calling `/api/appointments/{patientBAppointmentId}` returns HTTP 403 Forbidden (`SEC-01` fix).
-  8. `patient_CancelOwnAppointment_Succeeds`: Patient calling `PUT /api/appointments/{ownId}/status?status=CANCELLED` returns HTTP 200.
-  9. `patient_CancelOtherPatientAppointment_Forbidden`: Patient A attempting to cancel Patient B's appointment returns HTTP 403 Forbidden.
-  10. `patient_DownloadOwnPrescriptionPdf_Succeeds`: Patient calling `/api/prescriptions/{ownPrescriptionId}/pdf` returns HTTP 200 and PDF binary.
-  11. `patient_DownloadOtherPatientPrescriptionPdf_Forbidden`: Patient A attempting to download Patient B's prescription PDF returns HTTP 403 Forbidden (`SEC-01` fix).
-  12. `patient_ViewOtherPatientInvoice_Forbidden`: Patient A attempting to query Patient B's invoices returns HTTP 403 Forbidden (`SEC-01` fix).
+### B. Stable Account-to-Patient Identity Mapping (SEC-01 Follow-up)
+- **Files:** `AuthorizationService.java`, `AccessControlSecurityTest.java`
+- **Tests Added/Verified:**
+  1. `patientWithChangedOrForgedEmail_CannotAccessOtherPatientRecord`: Verified that changing or forging an email address to match another patient's email does not confer medical record access. Access is strictly bound to immutable account `userId`.
+  2. `patientA_AccessOwnMedicalHistory_Succeeds` & `patientB_AccessOtherPatientMedicalHistory_Forbidden`: Verified record-level isolation between distinct patient accounts.
 
-### C. `TokenLifecycleSecurityTest` (SEC-04 & SEC-07 Verification)
-- **File:** `backend/src/test/java/com/hospital/backend/security/TokenLifecycleSecurityTest.java`
-- **Tests Executed:**
-  1. `refreshToken_RotatesSuccessfully_OldTokenInvalidated`: Verifies that refreshing returns a new refresh token and deletes/invalidates the old refresh token (`SEC-07` fix).
-  2. `refreshToken_ReplayAttack_IsRejected`: Verifies that attempting to reuse an already-consumed refresh token fails with HTTP 400 Bad Request.
-  3. `logout_InvalidatesRefreshToken_AndAccessTokens`: Calling `/api/auth/logout` updates user `tokenInvalidBefore` and purges active refresh tokens.
-  4. `jwtService_RejectsTokenIssuedBeforeInvalidation`: Validates that access tokens issued prior to `tokenInvalidBefore` fail validation (`isTokenValid == false`), providing instant cross-instance access token revocation.
-  5. `jwtService_ValidatesValidToken`: Validates that valid unexpired tokens for active users pass validation.
-  6. `jwtService_ProductionKeyValidation_RequiresAtLeast256Bits`: Ensures production profile requires at least 256 bits of entropy and rejects weak keys (`SEC-04` fix).
+### C. Appointment Identifier & Role Scoping (SEC-01 & SEC-06 Follow-up)
+- **Files:** `AppointmentController.java`, `AppointmentServiceImpl.java`, `PrescriptionController.java`, `AccessControlSecurityTest.java`
+- **Tests Added/Verified:**
+  1. `doctorOwnershipCheck_SupportsBothProfileIdAndUserId`: Verified doctors can query schedules using either MongoDB Doctor profile ID or User account ID.
+  2. `patientAttemptingToQueryDoctorAppointments_ReturnsFalse`: Verified patients cannot query doctor appointment lists.
+  3. Scoped appointment retrieval ensures patients see only their appointments and doctors see only their scheduled appointments.
+
+### D. Same-Second JWT Logout & Invalidation Precision (SEC-07 Follow-up)
+- **Files:** `JwtService.java`, `AuthController.java`, `TokenLifecycleSecurityTest.java`
+- **Tests Added/Verified:**
+  1. `sameSecondLogoutAndImmediateReLogin_NewTokenIsValidAndOldTokenIsInvalid`: Validates millisecond precision (`iat_ms` claim) so that logging out and immediately re-logging in within the same second revokes the prior token while ensuring the new session remains active and valid.
+  2. `accessToken_IssuedBeforeLogoutTimestamp_IsInvalid`: Validates that tokens issued before `tokenInvalidBefore` are rejected across distributed calls.
 
 ---
 
-## 3. Frontend & Static Analysis Evidence
+## 3. Test Limitations & Scope Clarification
 
-- **Frontend ESLint Check:**
-  - Command: `cd frontend; npm run lint`
-  - Output: `0 errors, 11 warnings` (clean static pass, missing `FaShieldHalved` import resolved).
-- **Environment & Secret Audit:**
-  - Audited `.env.example`, `application.properties`, and `application-prod.properties`.
-  - Confirmed: 0 hardcoded credentials, 0 real JWT secrets, 0 hardcoded personal emails in committed configs.
-- **Docker Compose Configurations:**
-  - `docker-compose.yml`: MongoDB bound to `127.0.0.1:27017:27017` with root authentication required (`SEC-05`). Wildcard origins and fallback JWT secret removed (`SEC-03`, `SEC-04`).
-  - `docker-compose.prod.yml`: MongoDB completely unexposed to host (`expose: 27017`), internal communication only (`SEC-05`).
+> [!WARNING]
+> While unit and mock-backed integration tests verify the business logic, atomicity primitives, and security filters, **full production certification requires end-to-end load testing on a clustered MongoDB replica set and multi-node container deployment.**
