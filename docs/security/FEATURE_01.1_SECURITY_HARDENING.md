@@ -2,8 +2,8 @@
 
 **Project:** PulseCare 2.0
 **Phase:** 01 — Core Security Foundation
-**Branch:** `feature/01.1-security-access-control`
-**Base:** `main` (commit `8d325c496dda57dc5fc2d10f0bf202fda02cad2c`)
+**Branch:** `feature/01.1-security-access-control` (and `fix/01.1.9-security-followup`)
+**Base:** `main`
 **Standard:** OWASP Top 10 API Security / HIPAA Security Rule
 
 ---
@@ -19,7 +19,7 @@ Feature 01.1 addresses and resolves all critical and high-priority security vuln
 - **SEC-06 (High):** Broken Function-Level Authorization Locking Patients Out of the Patient Portal.
 - **SEC-07 (High):** Incomplete Token Lifecycle (Lack of Token Rotation & Lack of Revocation on Logout).
 
-The implementation strictly maintains PulseCare as a functioning hospital management application while establishing enterprise-grade healthcare security boundaries.
+Feature 01.1.9 delivers post-merge follow-up corrections for refresh token atomicity/hashing, immutable account-to-patient identity mapping (removing email trust), appointment/prescription doctor profile ID vs user ID resolution, and same-second JWT logout precision.
 
 ---
 
@@ -39,9 +39,9 @@ The implementation strictly maintains PulseCare as a functioning hospital manage
   - In `SecurityConfig.java`, `/api/patients/**` required `ROLE_ADMIN`, locking patients out of `/api/patients/me`, medical history, and family records.
 - **Remediation Architecture:**
   - **`AuthorizationService.java` (`@Service("authz")`):**
-    - `isPatientOwner(patientId)`: Verifies caller's authenticated user ID matches the patient entity's linked `userId`.
+    - `isPatientOwner(patientId)`: Verifies caller's authenticated user ID matches the patient entity's linked `userId`. Never trusts matching email addresses as proof of ownership.
     - `canAccessPatient(patientId)`: Permits access if caller is `ADMIN`, the owner patient, or an assigned doctor with a clinical relationship.
-    - `hasDoctorPatientRelationship(doctorId, patientId)`: Verifies whether an appointment exists between the doctor and patient in MongoDB.
+    - `hasDoctorPatientRelationship(doctorId, patientId)`: Verifies whether an appointment exists between the doctor and patient in MongoDB across profile ID and user ID.
     - `checkAppointmentAccess(appointment)`: Verifies patient ownership or doctor assignment.
     - `canUpdateAppointmentStatus(appointment, newStatus)`: Allows patients to only cancel their own appointment.
     - `checkPrescriptionAccess(prescription)`: Verifies patient ownership or doctor authorship.
@@ -96,12 +96,24 @@ The implementation strictly maintains PulseCare as a functioning hospital manage
   - `.env.example`: Replaced hardcoded credentials with safe placeholder variables.
   - `application.properties` & `application-prod.properties`: Removed personal email addresses and weak default secrets.
 
+### 2.6 Feature 01.1.9: Post-Merge Follow-up Corrections
+- **Refresh Token Atomicity & Storage Security:**
+  - Implemented atomic `deleteByToken` in `RefreshTokenRepository` combined with synchronized locks in `RefreshTokenServiceImpl` to guarantee only one request can consume a token during concurrent races.
+  - All refresh tokens stored in MongoDB are hashed using SHA-256 (plaintext tokens are never persisted).
+- **Immutable Account-to-Patient Identity Mapping:**
+  - `AuthorizationService.isPatientOwner` strictly checks `user.getId() == patient.getUserId()`. Removed email matching fallback to prevent cross-account leakage if an email is altered or spoofed.
+- **Doctor & Patient ID Mapping in Appointments:**
+  - Resolved `AppointmentServiceImpl` and `AuthorizationService.isDoctorOwner` to support both Doctor MongoDB ID and User account ID.
+  - `findByDoctorIdIn` and `findByPatientIdIn` ensure all legitimate appointments are retrieved without exposing unrelated data.
+- **JWT Logout Precision:**
+  - Added `iat_ms` millisecond claim to JWT tokens. Resolves same-second logout and immediate re-login truncation issues so that old tokens are revoked while newly issued tokens remain valid.
+
 ---
 
 ## 3. Verification & Evidence
-- **Automated Regression Suite:** 29 tests run, 29 passed, 0 failed.
+- **Automated Regression Suite:** 35 tests run, 35 passed, 0 failed.
 - **Security Tests:**
   - `RegistrationSecurityTest`: 4/4 passed.
-  - `AccessControlSecurityTest`: 12/12 passed.
-  - `TokenLifecycleSecurityTest`: 6/6 passed.
+  - `AccessControlSecurityTest`: 15/15 passed.
+  - `TokenLifecycleSecurityTest`: 9/9 passed.
 - **Frontend Linting:** 0 errors.

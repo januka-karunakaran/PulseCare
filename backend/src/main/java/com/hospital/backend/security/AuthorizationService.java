@@ -20,8 +20,10 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Reusable clinical object-level authorization service.
@@ -62,18 +64,9 @@ public class AuthorizationService {
             return true;
         }
 
-        // 2. Patients can only access their own patient profile
+        // 2. Patients can only access their own patient profile via stable account-to-patient identity mapping
         if (user.getRole() == Role.PATIENT) {
-            if (patientId.equals(user.getId())) {
-                return true;
-            }
-            Optional<Patient> patientOpt = patientRepository.findById(patientId);
-            if (patientOpt.isPresent()) {
-                Patient patient = patientOpt.get();
-                return user.getId().equals(patient.getUserId())
-                        || user.getEmail().equalsIgnoreCase(patient.getEmail());
-            }
-            return false;
+            return isPatientOwner(user, patientId);
         }
 
         // 3. Doctors can access patient records only when a valid clinical relationship exists
@@ -85,21 +78,41 @@ public class AuthorizationService {
     }
 
     public boolean hasDoctorPatientRelationship(String doctorUserId, String patientId) {
-        String docProfileId = doctorRepository.findByUserId(doctorUserId)
-                .map(Doctor::getId)
-                .orElse(doctorUserId);
+        if (doctorUserId == null || patientId == null) return false;
+
+        Optional<Doctor> docOpt = doctorRepository.findByUserId(doctorUserId)
+                .or(() -> doctorRepository.findById(doctorUserId));
+
+        Set<String> doctorIds = new HashSet<>();
+        doctorIds.add(doctorUserId);
+        docOpt.ifPresent(d -> {
+            if (d.getId() != null) doctorIds.add(d.getId());
+            if (d.getUserId() != null) doctorIds.add(d.getUserId());
+        });
+
+        Set<String> patientIds = new HashSet<>();
+        patientIds.add(patientId);
+        patientRepository.findById(patientId).ifPresent(p -> {
+            if (p.getUserId() != null) patientIds.add(p.getUserId());
+        });
+        patientRepository.findByUserId(patientId).ifPresent(p -> {
+            if (p.getUserId() != null) patientIds.add(p.getUserId());
+        });
 
         // Check if doctor has an appointment scheduled or completed with this patient
-        List<Appointment> doctorAppts = appointmentRepository.findByDoctorId(docProfileId);
-        boolean hasAppointment = doctorAppts.stream().anyMatch(a ->
-                patientId.equals(a.getPatientId()));
+        for (String docId : doctorIds) {
+            List<Appointment> doctorAppts = appointmentRepository.findByDoctorId(docId);
+            boolean hasAppointment = doctorAppts.stream().anyMatch(a ->
+                    patientIds.contains(a.getPatientId()));
+            if (hasAppointment) return true;
 
-        if (hasAppointment) return true;
+            List<Prescription> docPrescriptions = prescriptionRepository.findByDoctorId(docId);
+            boolean hasPrescription = docPrescriptions.stream().anyMatch(p ->
+                    patientIds.contains(p.getPatientId()));
+            if (hasPrescription) return true;
+        }
 
-        // Check if doctor has issued a prescription to this patient
-        List<Prescription> docPrescriptions = prescriptionRepository.findByDoctorId(docProfileId);
-        return docPrescriptions.stream().anyMatch(p ->
-                patientId.equals(p.getPatientId()));
+        return false;
     }
 
     public void checkPatientAccess(String patientId) {
@@ -197,19 +210,35 @@ public class AuthorizationService {
         throw new AccessDeniedException("You are not authorized to access this billing invoice");
     }
 
-    private boolean isPatientOwner(User user, String patientId) {
-        if (patientId == null) return false;
-        if (patientId.equals(user.getId())) return true;
-        return patientRepository.findById(patientId)
-                .map(p -> user.getId().equals(p.getUserId()) || user.getEmail().equalsIgnoreCase(p.getEmail()))
-                .orElse(false);
+    public boolean isPatientOwner(String patientId) {
+        return isPatientOwner(getCurrentUser(), patientId);
     }
 
-    private boolean isDoctorOwner(User user, String doctorId) {
-        if (doctorId == null) return false;
+    public boolean isPatientOwner(User user, String patientId) {
+        if (patientId == null || user == null) return false;
+        // Direct match against user's primary key
+        if (patientId.equals(user.getId())) return true;
+        // Match against Patient document's userId (foreign key to User)
+        return patientRepository.findById(patientId)
+                .map(p -> user.getId().equals(p.getUserId()))
+                .orElseGet(() -> patientRepository.findByUserId(patientId)
+                        .map(p -> user.getId().equals(p.getUserId()))
+                        .orElse(false));
+    }
+
+    public boolean isDoctorOwner(String doctorId) {
+        return isDoctorOwner(getCurrentUser(), doctorId);
+    }
+
+    public boolean isDoctorOwner(User user, String doctorId) {
+        if (doctorId == null || user == null) return false;
+        if (user.getRole() == Role.ADMIN) return true;
+        if (user.getRole() != Role.DOCTOR) return false;
         if (doctorId.equals(user.getId())) return true;
         return doctorRepository.findById(doctorId)
                 .map(d -> user.getId().equals(d.getUserId()) || user.getId().equals(d.getId()))
-                .orElse(false);
+                .orElseGet(() -> doctorRepository.findByUserId(doctorId)
+                        .map(d -> user.getId().equals(d.getUserId()))
+                        .orElse(false));
     }
 }

@@ -229,4 +229,50 @@ public class AccessControlSecurityTest {
         assertTrue(authz.canAccessPatient("patient-A-id"));
         assertTrue(authz.canAccessPatient("patient-B-id"));
     }
+
+    @Test
+    public void patientWithChangedOrForgedEmail_CannotAccessOtherPatientRecord() {
+        // Patient B creates an account or changes email to match Patient A's email
+        User patientWithForgedEmail = User.builder()
+                .id("malicious-user-id")
+                .email("patientA@test.com") // Matches Patient A's email!
+                .fullName("Malicious Actor")
+                .role(Role.PATIENT)
+                .build();
+        authenticateAs(patientWithForgedEmail);
+
+        when(patientRepository.findById("patient-A-id")).thenReturn(Optional.of(
+                Patient.builder().userId("patient-A-id").email("patientA@test.com").build()
+        ));
+
+        // Must return false because ownership relies strictly on immutable account userId, not email
+        boolean canAccess = authz.canAccessPatient("patient-A-id");
+        assertFalse(canAccess, "Patient access must rely on verified account identity, not matching email address");
+    }
+
+    @Test
+    public void doctorOwnershipCheck_SupportsBothProfileIdAndUserId() {
+        authenticateAs(doctorUser);
+        when(doctorRepository.findById("doctor-profile-1")).thenReturn(Optional.of(
+                Doctor.builder().id("doctor-profile-1").userId("doctor-1-id").build()
+        ));
+
+        // When doctor queries by doctor profile ID
+        assertTrue(authz.isDoctorOwner("doctor-profile-1"));
+        // When doctor queries by account User ID
+        assertTrue(authz.isDoctorOwner("doctor-1-id"));
+        // When doctor queries another doctor's ID
+        when(doctorRepository.findById("other-doc-id")).thenReturn(Optional.of(
+                Doctor.builder().id("other-doc-id").userId("other-user-id").build()
+        ));
+        assertFalse(authz.isDoctorOwner("other-doc-id"));
+    }
+
+    @Test
+    public void patientAttemptingToQueryDoctorAppointments_ReturnsFalse() {
+        authenticateAs(patientAUser);
+
+        assertFalse(authz.isDoctorOwner("doctor-profile-1"));
+        assertFalse(authz.isDoctorOwner("doctor-1-id"));
+    }
 }

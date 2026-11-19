@@ -100,13 +100,18 @@ public class AuthController {
         }
 
         if (request != null && request.getRefreshToken() != null && !request.getRefreshToken().isBlank()) {
-            refreshTokenRepository.findByToken(request.getRefreshToken()).ifPresent(token -> {
-                refreshTokenService.deleteByUserId(token.getUserId());
-                userRepository.findById(token.getUserId()).ifPresent(user -> {
-                    user.setTokenInvalidBefore(java.time.Instant.now());
-                    userRepository.save(user);
-                });
-            });
+            String rawToken = request.getRefreshToken();
+            String hashed = com.hospital.backend.service.impl.RefreshTokenServiceImpl.hashToken(rawToken);
+            refreshTokenRepository.findByToken(hashed)
+                    .or(() -> refreshTokenRepository.findByToken(rawToken))
+                    .ifPresent(token -> {
+                        refreshTokenService.deleteByUserId(token.getUserId());
+                        userRepository.findById(token.getUserId()).ifPresent(user -> {
+                            user.setTokenInvalidBefore(java.time.Instant.now());
+                            userRepository.save(user);
+                        });
+                    });
+            refreshTokenService.deleteByToken(rawToken);
         }
 
         return ResponseEntity.ok("Logged out successfully");
