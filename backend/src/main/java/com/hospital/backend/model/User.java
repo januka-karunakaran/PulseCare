@@ -40,6 +40,9 @@ public class User implements UserDetails {
     private String specialization; // For doctors
     private String licenseNumber;  // For doctors
 
+    // Security: Any JWT issued before this instant is treated as revoked (logout / password reset)
+    private java.time.Instant tokenInvalidBefore;
+
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));

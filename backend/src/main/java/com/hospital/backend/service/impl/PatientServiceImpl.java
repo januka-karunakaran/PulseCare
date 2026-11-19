@@ -54,7 +54,7 @@ public class PatientServiceImpl implements PatientService {
     @Override
     public Patient getPatientById(String id) {
         return patientRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Patient not found"));
+                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Patient not found: " + id));
     }
 
     @Override
@@ -80,7 +80,8 @@ public class PatientServiceImpl implements PatientService {
     @Override
     public Patient getMyProfile(String email) {
         return patientRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Patient not found"));
+                .or(() -> userRepository.findByEmail(email).flatMap(u -> patientRepository.findById(u.getId())))
+                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Patient profile not found for email: " + email));
     }
 
     @Override

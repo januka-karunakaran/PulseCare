@@ -10,13 +10,13 @@
 
 | Risk ID | Severity | Category | Affected Component | Impact | Verification Status |
 |---|---|---|---|---|---|
-| **SEC-01** | **CRITICAL** | Broken Object-Level Authorization (IDOR) | `AppointmentController.java`, `PrescriptionController.java`, `SecurityConfig.java` | Cross-patient health record leakage, unauthorized cancellation | Confirmed |
-| **SEC-02** | **CRITICAL** | Broken Object Property-Level Authorization | `SignupRequest.java`, `AuthServiceImpl.java`, `register/page.jsx` | Unrestricted privilege escalation to `ADMIN` | Confirmed |
-| **SEC-03** | **HIGH** | Security Misconfiguration | `CorsConfig.java`, `WebSocketConfig.java`, `DashboardController.java` | Credentialed CORS hijacking, cross-site WebSocket data leak | Confirmed |
-| **SEC-04** | **HIGH** | Hardcoded Credentials & Secrets | `docker-compose.yml`, `application.properties` | Token forgery, offline signature cracking | Confirmed |
-| **SEC-05** | **HIGH** | Infrastructure Exposure | `docker-compose.yml` | Unauthenticated public MongoDB port exposure | Confirmed |
-| **SEC-06** | **HIGH** | Broken Function-Level Authorization | `SecurityConfig.java`, `PatientController.java` | Patient portal lock-out (`/api/patients/me` returns 403 Forbidden) | Confirmed |
-| **SEC-07** | **HIGH** | Token Management & Invalidation Flaws | `AuthController.java`, `JwtService.java`, `RefreshTokenServiceImpl.java` | Lack of token revocation, replay attacks, non-rotation | Confirmed |
+| **SEC-01** | **CRITICAL** | Broken Object-Level Authorization (IDOR) | `AppointmentController.java`, `PrescriptionController.java`, `SecurityConfig.java` | Cross-patient health record leakage, unauthorized cancellation | **REMEDIATED (Feature 01.1)** |
+| **SEC-02** | **CRITICAL** | Broken Object Property-Level Authorization | `SignupRequest.java`, `AuthServiceImpl.java`, `register/page.jsx` | Unrestricted privilege escalation to `ADMIN` | **REMEDIATED (Feature 01.1)** |
+| **SEC-03** | **HIGH** | Security Misconfiguration | `CorsConfig.java`, `WebSocketConfig.java`, `DashboardController.java` | Credentialed CORS hijacking, cross-site WebSocket data leak | **REMEDIATED (Feature 01.1)** |
+| **SEC-04** | **HIGH** | Hardcoded Credentials & Secrets | `docker-compose.yml`, `application.properties` | Token forgery, offline signature cracking | **REMEDIATED (Feature 01.1)** |
+| **SEC-05** | **HIGH** | Infrastructure Exposure | `docker-compose.yml` | Unauthenticated public MongoDB port exposure | **REMEDIATED (Feature 01.1)** |
+| **SEC-06** | **HIGH** | Broken Function-Level Authorization | `SecurityConfig.java`, `PatientController.java` | Patient portal lock-out (`/api/patients/me` returns 403 Forbidden) | **REMEDIATED (Feature 01.1)** |
+| **SEC-07** | **HIGH** | Token Management & Invalidation Flaws | `AuthController.java`, `JwtService.java`, `RefreshTokenServiceImpl.java` | Lack of token revocation, replay attacks, non-rotation | **REMEDIATED (Feature 01.1)** |
 | **ARCH-01**| **HIGH** | Concurrency & Race Conditions | `AppointmentServiceImpl.java`, `BedServiceImpl.java`, `Bed.java` | Double-booking beds and appointment slots under concurrent load | Confirmed |
 | **ARCH-02**| **HIGH** | Scalability & Memory Exhaustion | `SearchServiceImpl.java`, `ReportsPage.jsx` | Server out-of-memory errors from unbounded in-memory `findAll()` | Confirmed |
 | **ARCH-03**| **MEDIUM** | Phantom Features & Dead Code | `TokenCleanupScheduler.java`, `AppointmentReminderScheduler.java`, `event/*` | System maintenance fails, false security sense from docs | Confirmed |

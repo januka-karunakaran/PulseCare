@@ -47,6 +47,29 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     }
 
     @Override
+    public RefreshToken rotateRefreshToken(String token) {
+        RefreshToken refreshToken = refreshTokenRepository.findByToken(token)
+                .orElseThrow(() -> new BadRequestException("Invalid or revoked refresh token"));
+
+        if (refreshToken.getExpiryDate().isBefore(Instant.now())) {
+            refreshTokenRepository.delete(refreshToken);
+            throw new BadRequestException("Refresh token expired");
+        }
+
+        String userId = refreshToken.getUserId();
+        // One-time use: delete the consumed token to prevent replay attacks
+        refreshTokenRepository.delete(refreshToken);
+
+        RefreshToken newToken = RefreshToken.builder()
+                .userId(userId)
+                .token(UUID.randomUUID().toString())
+                .expiryDate(Instant.now().plusSeconds(REFRESH_TOKEN_DURATION))
+                .build();
+
+        return refreshTokenRepository.save(newToken);
+    }
+
+    @Override
     public void deleteByUserId(String userId) {
         refreshTokenRepository.deleteByUserId(userId);
     }

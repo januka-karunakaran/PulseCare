@@ -9,21 +9,14 @@ import {
   FaEye,
   FaEyeSlash,
   FaLock,
-  FaShieldHalved,
   FaUser,
-  FaUserDoctor,
   FaCircleCheck,
   FaHeartPulse,
   FaStethoscope,
   FaArrowRight,
   FaArrowLeft,
+  FaShieldHalved,
 } from "react-icons/fa6";
-
-const ROLES = [
-  { value: "PATIENT", label: "Patient", icon: <FaUser /> },
-  { value: "DOCTOR", label: "Doctor", icon: <FaUserDoctor /> },
-  { value: "ADMIN", label: "Admin", icon: <FaShieldHalved /> },
-];
 
 export default function RegisterPage() {
   const [form, setForm] = useState({ fullName: "", email: "", password: "", role: "PATIENT" });
@@ -446,19 +439,10 @@ export default function RegisterPage() {
           {message && <div className="auth-message">{message}</div>}
           {error && <div className="auth-error">{error}</div>}
 
-          {/* Role selector */}
-          <div className="role-selector">
-            {ROLES.map((r) => (
-              <button
-                type="button"
-                key={r.value}
-                className={`role-btn ${form.role === r.value ? "active" : ""}`}
-                onClick={() => setForm((prev) => ({ ...prev, role: r.value }))}
-              >
-                <span style={{ fontSize: 16 }}>{r.icon}</span>
-                <span>{r.label}</span>
-              </button>
-            ))}
+          {/* Public registration is strictly for patient accounts */}
+          <div style={{ marginBottom: 16, padding: "8px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, fontSize: 13, color: "#166534", display: "flex", alignItems: "center", gap: 8 }}>
+            <FaUser style={{ color: "#16a34a" }} />
+            <span>Registering for <strong>PulseCare Patient Portal</strong></span>
           </div>
 
           <form onSubmit={handleRegister}>

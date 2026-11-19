@@ -1,67 +1,104 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import io from "socket.io-client";
+import { Client } from "@stomp/stompjs";
+import SockJS from "sockjs-client";
+import { WS_BASE } from "@/utils/constants";
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:8080";
-
+/**
+ * Standardized STOMP WebSocket hook matching the Spring Boot backend WebSocket broker.
+ * Automatically transmits Bearer token in CONNECT headers for server-side authorization.
+ */
 export function useWebSocket(token, userId) {
   const [connected, setConnected] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const socketRef = useRef(null);
+  const clientRef = useRef(null);
 
   useEffect(() => {
     if (!token || !userId) return;
 
+    const rawWsUrl = WS_BASE || "http://localhost:8080";
+    const httpSchemeUrl = rawWsUrl
+      .replace(/^ws:\/\//i, "http://")
+      .replace(/^wss:\/\//i, "https://")
+      .replace(/\/+$/, "");
+
+    const endpoint = httpSchemeUrl.endsWith("/ws/notifications")
+      ? httpSchemeUrl
+      : `${httpSchemeUrl}/ws/notifications`;
+
+    let client;
     try {
-      // Connect to WebSocket
-      socketRef.current = io(WS_URL, {
-        auth: {
-          token: token,
+      client = new Client({
+        webSocketFactory: () => new SockJS(endpoint),
+        connectHeaders: {
+          Authorization: `Bearer ${token}`,
         },
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        reconnectionAttempts: 5,
+        reconnectDelay: 5000,
+        heartbeatIncoming: 4000,
+        heartbeatOutgoing: 4000,
+        debug: (str) => {
+          if (process.env.NODE_ENV === "development") {
+            console.log("[STOMP hook]", str);
+          }
+        },
       });
 
-      // Connection events
-      socketRef.current.on("connect", () => {
-        console.log("WebSocket connected");
+      client.onConnect = () => {
         setConnected(true);
 
-        // Subscribe to user's notification queue
-        socketRef.current.emit("subscribe", { userId: userId });
-      });
+        // Subscribe to user private notification destination
+        client.subscribe("/user/queue/notifications", (message) => {
+          try {
+            const data = JSON.parse(message.body);
+            setNotifications((prev) => [data, ...prev]);
+          } catch (err) {
+            console.warn("Failed to parse incoming WebSocket notification:", err);
+          }
+        });
 
-      socketRef.current.on("disconnect", () => {
-        console.log("WebSocket disconnected");
-        setConnected(false);
-      });
-
-      // Receive notifications
-      socketRef.current.on("notification", (notification) => {
-        console.log("New notification received:", notification);
-        setNotifications((prev) => [notification, ...prev]);
-      });
-
-      socketRef.current.on("connect_error", (error) => {
-        console.error("WebSocket connection error:", error);
-      });
-
-      return () => {
-        if (socketRef.current) {
-          socketRef.current.disconnect();
-        }
+        // Also subscribe to specific user queue for backward compatibility
+        client.subscribe(`/user/${userId}/queue/notifications`, (message) => {
+          try {
+            const data = JSON.parse(message.body);
+            setNotifications((prev) => [data, ...prev]);
+          } catch (err) {
+            console.warn("Failed to parse incoming WebSocket notification:", err);
+          }
+        });
       };
-    } catch (error) {
-      console.error("Error setting up WebSocket:", error);
+
+      client.onDisconnect = () => {
+        setConnected(false);
+      };
+
+      client.onStompError = (frame) => {
+        console.warn("STOMP error:", frame.headers?.["message"]);
+      };
+
+      client.activate();
+      clientRef.current = client;
+    } catch (err) {
+      console.warn("Error initializing WebSocket client:", err);
     }
+
+    return () => {
+      if (clientRef.current) {
+        try {
+          clientRef.current.deactivate();
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    };
   }, [token, userId]);
 
-  const emit = (event, data) => {
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit(event, data);
+  const emit = (destination, body) => {
+    if (clientRef.current && clientRef.current.connected) {
+      clientRef.current.publish({
+        destination: destination,
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
     }
   };
 
@@ -70,6 +107,6 @@ export function useWebSocket(token, userId) {
     notifications,
     setNotifications,
     emit,
-    socket: socketRef.current,
+    client: clientRef.current,
   };
 }

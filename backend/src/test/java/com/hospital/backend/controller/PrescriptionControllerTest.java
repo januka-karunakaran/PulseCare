@@ -1,5 +1,7 @@
 package com.hospital.backend.controller;
 
+import com.hospital.backend.model.Prescription;
+import com.hospital.backend.security.AuthorizationService;
 import com.hospital.backend.service.PdfService;
 import com.hospital.backend.service.PrescriptionService;
 import org.junit.jupiter.api.Test;
@@ -30,11 +32,17 @@ public class PrescriptionControllerTest {
     @MockBean
     private PrescriptionService prescriptionService;
 
+    @MockBean
+    private AuthorizationService authz;
+
     @Test
     public void downloadPrescriptionPdf_ReturnsPdfAndHeaders() throws Exception {
         String id = "test-presc-1";
         byte[] sample = new byte[]{1, 2, 3, 4, 5};
 
+        Prescription dummy = new Prescription();
+        dummy.setId(id);
+        when(prescriptionService.getPrescriptionById(id)).thenReturn(dummy);
         when(pdfService.generatePrescriptionPdf(id)).thenReturn(sample);
 
         mockMvc.perform(get("/api/prescriptions/" + id + "/pdf"))

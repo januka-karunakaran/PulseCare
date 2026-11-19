@@ -51,6 +51,11 @@ export function getRefreshToken() {
   return localStorage.getItem(REFRESH_TOKEN_KEY);
 }
 
+export function setRefreshToken(token) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(REFRESH_TOKEN_KEY, token);
+}
+
 export function getRole() {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(ROLE_KEY);
@@ -84,4 +89,4 @@ export function isSessionExpired() {
   if (!user) return true;
   if (!user.expiresAt) return false;
   return user.expiresAt < Date.now();
-}
+}

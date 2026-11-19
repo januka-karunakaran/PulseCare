@@ -40,7 +40,9 @@ public class PrescriptionServiceImpl implements PrescriptionService {
         Patient patient = patientRepository.findById(request.getPatientId())
                 .orElseThrow(() -> new ResourceNotFoundException("Patient not found"));
 
-        if (!appointment.getDoctorId().equals(doctor.getUserId())) {
+        boolean doctorMatches = appointment.getDoctorId().equals(doctor.getId())
+                || (doctor.getUserId() != null && appointment.getDoctorId().equals(doctor.getUserId()));
+        if (!doctorMatches) {
             throw new ResourceNotFoundException("Doctor does not match this appointment");
         }
 

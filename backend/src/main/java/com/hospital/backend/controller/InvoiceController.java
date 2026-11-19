@@ -29,6 +29,7 @@ public class InvoiceController {
     }
 
     @GetMapping("/patient/{patientId}")
+    @PreAuthorize("hasRole('ADMIN') or @authz.canAccessPatient(#patientId)")
     public ResponseEntity<List<Invoice>> getPatientInvoices(@PathVariable String patientId) {
         return ResponseEntity.ok(invoiceService.getPatientInvoices(patientId));
     }

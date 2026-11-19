@@ -14,8 +14,10 @@ import com.hospital.backend.dto.RefreshResponse;
 import com.hospital.backend.dto.ResetPasswordRequest;
 import com.hospital.backend.dto.SignupOtpRequest;
 import com.hospital.backend.dto.SignupRequest;
+import com.hospital.backend.exception.BadRequestException;
 import com.hospital.backend.model.RefreshToken;
 import com.hospital.backend.model.User;
+import com.hospital.backend.repository.RefreshTokenRepository;
 import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.security.JwtService;
 import com.hospital.backend.service.AuthService;
@@ -31,6 +33,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final RefreshTokenService refreshTokenService;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final UserRepository userRepository;
     private final JwtService jwtService;
 
@@ -64,27 +67,47 @@ public class AuthController {
 
     @PostMapping("/refresh")
     public ResponseEntity<RefreshResponse> refresh(@RequestBody RefreshRequest request) {
+        if (request == null || request.getRefreshToken() == null || request.getRefreshToken().isBlank()) {
+            throw new BadRequestException("Refresh token is required");
+        }
 
-        RefreshToken refreshToken = refreshTokenService.verifyToken(request.getRefreshToken());
+        RefreshToken newRefreshToken = refreshTokenService.rotateRefreshToken(request.getRefreshToken());
 
-        User user = userRepository.findById(refreshToken.getUserId())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = userRepository.findById(newRefreshToken.getUserId())
+                .orElseThrow(() -> new BadRequestException("User not found"));
 
         String newAccessToken = jwtService.generateToken(user, user.getRole().name());
 
         return ResponseEntity.ok(
                 RefreshResponse.builder()
                         .accessToken(newAccessToken)
-                        .refreshToken(request.getRefreshToken())
+                        .refreshToken(newRefreshToken.getToken())
                         .build()
         );
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<String> logout(@RequestBody RefreshRequest request) {
+    public ResponseEntity<String> logout(
+            @RequestBody(required = false) RefreshRequest request,
+            org.springframework.security.core.Authentication authentication
+    ) {
+        if (authentication != null && authentication.isAuthenticated() && !"anonymousUser".equals(authentication.getName())) {
+            userRepository.findByEmail(authentication.getName()).ifPresent(user -> {
+                user.setTokenInvalidBefore(java.time.Instant.now());
+                userRepository.save(user);
+                refreshTokenService.deleteByUserId(user.getId());
+            });
+        }
 
-        RefreshToken token = refreshTokenService.verifyToken(request.getRefreshToken());
-        refreshTokenService.deleteByUserId(token.getUserId());
+        if (request != null && request.getRefreshToken() != null && !request.getRefreshToken().isBlank()) {
+            refreshTokenRepository.findByToken(request.getRefreshToken()).ifPresent(token -> {
+                refreshTokenService.deleteByUserId(token.getUserId());
+                userRepository.findById(token.getUserId()).ifPresent(user -> {
+                    user.setTokenInvalidBefore(java.time.Instant.now());
+                    userRepository.save(user);
+                });
+            });
+        }
 
         return ResponseEntity.ok("Logged out successfully");
     }

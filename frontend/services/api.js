@@ -6,6 +6,7 @@ import {
   getAccessToken,
   getRefreshToken,
   setAccessToken,
+  setRefreshToken,
 } from "@/utils/auth";
 import { refreshAccessToken } from "./authService";
 
@@ -31,6 +32,9 @@ async function tryRefreshToken() {
         throw new Error("No new access token returned");
       }
       setAccessToken(newToken);
+      if (data.refreshToken) {
+        setRefreshToken(data.refreshToken);
+      }
       return newToken;
     })
     .finally(() => {

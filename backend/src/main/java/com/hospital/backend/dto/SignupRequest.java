@@ -18,7 +18,7 @@ public class SignupRequest {
     @NotBlank(message = "Password is required")
     private String password;
 
-    @NotBlank(message = "Role is required")
+    // Optional: if supplied by client, only "PATIENT" is allowed; any other role is rejected.
     private String role;
 
     @NotBlank(message = "Email verification code is required")

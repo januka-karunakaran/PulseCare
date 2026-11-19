@@ -140,7 +140,7 @@ public class GlobalExceptionHandler {
                 .success(false)
                 .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
                 .error("Internal Server Error")
-                .message(ex.getMessage() != null ? ex.getMessage() : "An unexpected server error occurred")
+                .message("An unexpected error occurred. Please try again later.")
                 .timestamp(Instant.now())
                 .build();
         return new ResponseEntity<>(error, HttpStatus.INTERNAL_SERVER_ERROR);
