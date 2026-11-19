@@ -218,12 +218,18 @@ public class AuthorizationService {
         if (patientId == null || user == null) return false;
         // Direct match against user's primary key
         if (patientId.equals(user.getId())) return true;
-        // Match against Patient document's userId (foreign key to User)
-        return patientRepository.findById(patientId)
-                .map(p -> user.getId().equals(p.getUserId()))
+        // Match against Patient document's userId or id
+        boolean matchesPatientRecord = patientRepository.findById(patientId)
+                .map(p -> user.getId().equals(p.getUserId()) || user.getId().equals(p.getId()))
                 .orElseGet(() -> patientRepository.findByUserId(patientId)
-                        .map(p -> user.getId().equals(p.getUserId()))
+                        .map(p -> user.getId().equals(p.getUserId()) || user.getId().equals(p.getId()))
                         .orElse(false));
+        if (matchesPatientRecord) return true;
+
+        // Check if caller's patient profile ID matches the requested patientId
+        return patientRepository.findByUserId(user.getId())
+                .map(p -> patientId.equals(p.getId()) || patientId.equals(p.getUserId()))
+                .orElse(false);
     }
 
     public boolean isDoctorOwner(String doctorId) {

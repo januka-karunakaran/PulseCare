@@ -6,6 +6,9 @@ import com.hospital.backend.repository.RefreshTokenRepository;
 import com.hospital.backend.service.RefreshTokenService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -13,21 +16,17 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class RefreshTokenServiceImpl implements RefreshTokenService {
 
+    private final MongoTemplate mongoTemplate;
     private final RefreshTokenRepository refreshTokenRepository;
 
     private static final long REFRESH_TOKEN_DURATION = 7L * 24 * 60 * 60; // 7 days
-
-    // In-memory locks to serialize concurrent token consumption attempts per token within the JVM
-    private final ConcurrentHashMap<String, Object> tokenLocks = new ConcurrentHashMap<>();
 
     public static String hashToken(String token) {
         if (token == null) return null;
@@ -72,7 +71,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
                 .orElseThrow(() -> new BadRequestException("Invalid refresh token"));
 
         if (refreshToken.getExpiryDate().isBefore(Instant.now())) {
-            refreshTokenRepository.delete(refreshToken);
+            mongoTemplate.remove(refreshToken);
             throw new BadRequestException("Refresh token expired");
         }
 
@@ -86,49 +85,42 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         }
 
         String hashedToken = hashToken(token);
-        Object lock = tokenLocks.computeIfAbsent(hashedToken, k -> new Object());
 
-        synchronized (lock) {
-            try {
-                // Atomic consumption: find and delete the token in a single atomic database operation
-                Optional<RefreshToken> deletedTokenOpt = refreshTokenRepository.deleteByToken(hashedToken);
-                if (deletedTokenOpt.isEmpty()) {
-                    // Fallback lookup in case token was saved unhashed (legacy support or tests)
-                    deletedTokenOpt = refreshTokenRepository.deleteByToken(token);
-                }
+        // Database-enforced atomic consume operation across all application instances
+        Query query = Query.query(Criteria.where("token").is(hashedToken));
+        RefreshToken consumedToken = mongoTemplate.findAndRemove(query, RefreshToken.class);
 
-                if (deletedTokenOpt.isEmpty()) {
-                    throw new BadRequestException("Invalid or revoked refresh token");
-                }
-
-                RefreshToken consumedToken = deletedTokenOpt.get();
-
-                if (consumedToken.getExpiryDate().isBefore(Instant.now())) {
-                    throw new BadRequestException("Refresh token expired");
-                }
-
-                String userId = consumedToken.getUserId();
-                String newRawToken = UUID.randomUUID().toString();
-                String newHashedToken = hashToken(newRawToken);
-
-                RefreshToken newToken = RefreshToken.builder()
-                        .userId(userId)
-                        .token(newHashedToken)
-                        .expiryDate(Instant.now().plusSeconds(REFRESH_TOKEN_DURATION))
-                        .build();
-
-                RefreshToken savedToken = refreshTokenRepository.save(newToken);
-
-                return RefreshToken.builder()
-                        .id(savedToken.getId())
-                        .userId(savedToken.getUserId())
-                        .token(newRawToken)
-                        .expiryDate(savedToken.getExpiryDate())
-                        .build();
-            } finally {
-                tokenLocks.remove(hashedToken);
-            }
+        if (consumedToken == null) {
+            // Fallback for unhashed tokens (legacy support or tests)
+            consumedToken = mongoTemplate.findAndRemove(Query.query(Criteria.where("token").is(token)), RefreshToken.class);
         }
+
+        if (consumedToken == null) {
+            throw new BadRequestException("Invalid or revoked refresh token");
+        }
+
+        if (consumedToken.getExpiryDate().isBefore(Instant.now())) {
+            throw new BadRequestException("Refresh token expired");
+        }
+
+        String userId = consumedToken.getUserId();
+        String newRawToken = UUID.randomUUID().toString();
+        String newHashedToken = hashToken(newRawToken);
+
+        RefreshToken newToken = RefreshToken.builder()
+                .userId(userId)
+                .token(newHashedToken)
+                .expiryDate(Instant.now().plusSeconds(REFRESH_TOKEN_DURATION))
+                .build();
+
+        RefreshToken savedToken = refreshTokenRepository.save(newToken);
+
+        return RefreshToken.builder()
+                .id(savedToken.getId())
+                .userId(savedToken.getUserId())
+                .token(newRawToken)
+                .expiryDate(savedToken.getExpiryDate())
+                .build();
     }
 
     @Override
@@ -140,7 +132,6 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     public void deleteByToken(String token) {
         if (token == null || token.isBlank()) return;
         String hashedToken = hashToken(token);
-        refreshTokenRepository.deleteByToken(hashedToken);
-        refreshTokenRepository.deleteByToken(token);
+        mongoTemplate.remove(Query.query(Criteria.where("token").in(hashedToken, token)), RefreshToken.class);
     }
 }
