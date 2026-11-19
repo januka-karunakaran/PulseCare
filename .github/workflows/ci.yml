@@ -37,6 +37,11 @@ jobs:
       - name: Run Backend Unit & Integration Tests
         working-directory: ./backend
         run: ./mvnw -B test
+        env:
+          TEST_MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
+          TEST_MONGODB_DATABASE: hospital_management_test_isolated
+          MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
+          MONGODB_DATABASE: hospital_management_test_isolated
 
       - name: Build Production JAR
         working-directory: ./backend
@@ -67,7 +72,6 @@ jobs:
       - name: Run Frontend Lint Checks
         working-directory: ./frontend
         run: npm run lint
-        continue-on-error: true
 
       - name: Build Next.js Production Bundle
         working-directory: ./frontend

@@ -48,10 +48,12 @@ jobs:
       - name: Run backend tests
         run: ./mvnw -B test
         env:
-          MONGODB_URI: mongodb://localhost:27017/hospital_management_ci
-          MONGODB_DATABASE: hospital_management_ci
+          TEST_MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
+          TEST_MONGODB_DATABASE: hospital_management_test_isolated
+          MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
+          MONGODB_DATABASE: hospital_management_test_isolated
           MAIL_ENABLED: 'false'
-          JWT_SECRET: ci-only-jwt-secret
+          JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy
 
   frontend:
     name: Frontend checks
@@ -73,8 +75,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint frontend (report only)
-        continue-on-error: true
+      - name: Lint frontend
         run: npm run lint
 
       - name: Build frontend

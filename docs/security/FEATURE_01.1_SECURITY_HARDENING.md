@@ -2,7 +2,7 @@
 
 **Project:** PulseCare 2.0
 **Phase:** 01 — Core Security Foundation
-**Branch:** `feature/01.1-security-access-control` (followed by `fix/01.1.9-security-followup` and `fix/01.1.10-token-identity-corrections`)
+**Branch:** `feature/01.1-security-access-control` (followed by `fix/01.1.9-security-followup`, `fix/01.1.10-token-identity-corrections`, and `fix/01.1.11-test-database-isolation`)
 **Base:** `main`
 **Standard:** OWASP Top 10 API Security / HIPAA Security Rule
 
@@ -19,24 +19,21 @@ Feature 01.1 addresses and resolves all critical and high-priority security vuln
 - **SEC-06 (High):** Broken Function-Level Authorization Locking Patients Out of the Patient Portal.
 - **SEC-07 (High):** Incomplete Token Lifecycle (Lack of Token Rotation & Lack of Revocation on Logout).
 
-Features 01.1.9 and 01.1.10 delivered final database-enforced atomicity (replacing JVM-local synchronization with MongoDB `findAndRemove` and unique indexes), full patient dual-identity mapping (`id` vs `userId`), and same-second JWT invalidation precision.
+Features 01.1.9 through 01.1.11 finalized database-enforced atomicity (replacing JVM-local synchronization with MongoDB `findAndRemove` and unique indexes), full patient dual-identity mapping (`id` vs `userId`), same-second JWT invalidation precision, isolated Testcontainers MongoDB integration testing with fail-closed destructive safeguards, and production index deployment policies.
 
 ---
 
 ## 2. Remediations Implemented
 
 ### 2.1 Feature 01.1.1: Registration Privilege Escalation Fix (SEC-02)
-- **Backend Fix:**
-  - `SignupRequest.java`: Removed client role selection.
-  - `AuthServiceImpl.java`: Rejects non-`PATIENT` role requests with `BadRequestException`. Defaults role unconditionally to `Role.PATIENT` and persists a linked `Patient` document.
-- **Frontend Fix:**
-  - `frontend/app/register/page.jsx`: Removed public role-selection UI controls. Registration registers exclusively as Patient.
+- `SignupRequest.java`: Removed client role selection.
+- `AuthServiceImpl.java`: Rejects non-`PATIENT` role requests with `BadRequestException`. Defaults role unconditionally to `Role.PATIENT` and persists a linked `Patient` document.
+- `frontend/app/register/page.jsx`: Removed public role-selection UI controls. Registration registers exclusively as Patient.
 
 ### 2.2 Features 01.1.2 & 01.1.3: Patient Data Ownership & Portal Access Repair (SEC-01, SEC-06)
-- **Remediation Architecture:**
-  - `AuthorizationService.java`: Fine-grained object ownership checks.
-  - `SecurityConfig.java`: Allowed `ROLE_PATIENT` and `ROLE_DOCTOR` on portal endpoints.
-  - `AppointmentController.java`, `PrescriptionController.java`, `InvoiceController.java`, `PatientController.java`: Protected with `@PreAuthorize` guards.
+- `AuthorizationService.java`: Fine-grained object ownership checks.
+- `SecurityConfig.java`: Allowed `ROLE_PATIENT` and `ROLE_DOCTOR` on portal endpoints.
+- `AppointmentController.java`, `PrescriptionController.java`, `InvoiceController.java`, `PatientController.java`: Protected with `@PreAuthorize` guards.
 
 ### 2.3 Feature 01.1.4: JWT & Refresh Token Hardening (SEC-04, SEC-07)
 - Added `tokenInvalidBefore` field on `User`.
@@ -53,7 +50,7 @@ Features 01.1.9 and 01.1.10 delivered final database-enforced atomicity (replaci
 - Complete internal exposure only (`expose: 27017`) for production Compose.
 - Sanitized environment templates and application properties.
 
-### 2.6 Features 01.1.9 & 01.1.10: Final Identity and Token Concurrency Fix
+### 2.6 Features 01.1.9, 01.1.10 & 01.1.11: Token Concurrency, Identity, and Test Database Isolation
 - **Database-Enforced Atomic Refresh Token Rotation:**
   - Replaced JVM-local locks with MongoDB `mongoTemplate.findAndRemove(query, RefreshToken.class)`.
   - Added `@Indexed(unique = true)` on `RefreshToken.token`.
@@ -65,11 +62,17 @@ Features 01.1.9 and 01.1.10 delivered final database-enforced atomicity (replaci
   - Updated `AuthorizationService.isPatientOwner` to recognize both ID formats without email dependency.
 - **Same-Second JWT Logout Precision:**
   - Added `iat_ms` millisecond claim to JWT payload to resolve second-boundary truncation.
+- **Safe Database Integration Testing (01.1.11):**
+  - Configured dedicated test database `hospital_management_test_isolated` via `application-test.properties`.
+  - Added Testcontainers MongoDB dynamic containerization.
+  - Implemented fail-closed safety guard throwing `IllegalStateException` if integration tests ever run against non-test or production databases.
+  - Environment-specific index policy: `auto-index-creation=true` in dev/test, `false` in production.
+  - Enforced strict CI quality gates in GitHub Actions workflows.
 
 ---
 
 ## 3. Verification & Evidence
-- **Automated Regression Suite:** 40 tests run, 40 passed, 0 failed.
-- **Real MongoDB Integration Suite:** `RefreshTokenMongoIntegrationTest` (3 tests passed).
+- **Automated Regression Suite:** 41 tests run, 41 passed, 0 failed.
+- **Isolated MongoDB Integration Suite:** `RefreshTokenMongoIntegrationTest` (4 tests passed).
 - **Unit & Access Control Tests:** 37 unit and MockMvc tests passed.
 - **Frontend Linting:** 0 errors.
