@@ -1,10 +1,14 @@
 package com.hospital.backend.controller;
 
 import com.hospital.backend.dto.NotificationResponse;
+import com.hospital.backend.exception.ResourceNotFoundException;
+import com.hospital.backend.model.Notification;
+import com.hospital.backend.repository.NotificationRepository;
 import com.hospital.backend.service.NotificationService;
 import com.hospital.backend.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -16,10 +20,10 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/notifications")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*", maxAge = 3600)
 public class NotificationController {
 
     private final NotificationService notificationService;
+    private final NotificationRepository notificationRepository;
     private final UserService userService;
 
     /**
@@ -62,7 +66,16 @@ public class NotificationController {
      */
     @PutMapping("/{notificationId}/read")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, String>> markAsRead(@PathVariable String notificationId) {
+    public ResponseEntity<Map<String, String>> markAsRead(
+            @PathVariable String notificationId,
+            Authentication authentication
+    ) {
+        String currentUserId = userService.getUserIdByEmail(authentication.getName());
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Notification not found"));
+        if (!currentUserId.equals(notification.getUserId())) {
+            throw new AccessDeniedException("You are not authorized to modify this notification");
+        }
         notificationService.markAsRead(notificationId);
         Map<String, String> response = new HashMap<>();
         response.put("message", "Notification marked as read");

@@ -41,6 +41,7 @@ public class BedController {
     }
 
     @GetMapping("/patient/{patientId}")
+    @PreAuthorize("hasRole('ADMIN') or @authz.canAccessPatient(#patientId)")
     public ResponseEntity<List<BedBooking>> getPatientBookings(@PathVariable String patientId) {
         return ResponseEntity.ok(bedService.getPatientBookings(patientId));
     }

@@ -34,7 +34,8 @@ public class AppointmentServiceImpl implements AppointmentService {
     @Override
     public synchronized Appointment createAppointment(AppointmentRequest request) {
         Doctor selectedDoctor = doctorRepository.findById(request.getDoctorId())
-                .orElseThrow(() -> new RuntimeException("Doctor not found"));
+                .or(() -> doctorRepository.findByUserId(request.getDoctorId()))
+                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Doctor not found"));
 
         patientRepository.findById(request.getPatientId()).orElseGet(() -> {
             User patientUser = userRepository.findById(request.getPatientId())
@@ -109,7 +110,7 @@ public class AppointmentServiceImpl implements AppointmentService {
     @Override
     public Appointment getAppointmentById(String id) {
         return appointmentRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Appointment not found"));
+                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Appointment not found: " + id));
     }
 
     @Override

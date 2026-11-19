@@ -13,7 +13,6 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/users")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*", maxAge = 3600)
 public class UserController {
 
     private final UserService userService;
@@ -34,7 +33,7 @@ public class UserController {
      * Get user profile by ID
      */
     @GetMapping("/{userId}")
-    @PreAuthorize("isAuthenticated()")
+    @PreAuthorize("hasRole('ADMIN') or @authz.isCurrentUser(#userId) or @authz.canAccessPatient(#userId)")
     public ResponseEntity<ProfileResponse> getUserProfile(@PathVariable String userId) {
         return ResponseEntity.ok(userService.getUserById(userId));
     }

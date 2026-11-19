@@ -1,6 +1,9 @@
 package com.hospital.backend.controller;
 
 import com.hospital.backend.dto.*;
+import com.hospital.backend.enums.Role;
+import com.hospital.backend.model.User;
+import com.hospital.backend.security.AuthorizationService;
 import com.hospital.backend.service.SearchService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -16,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 public class SearchController {
     
     private final SearchService searchService;
+    private final AuthorizationService authz;
     
     // ==================== Doctor Search Endpoints ====================
     
@@ -68,6 +72,12 @@ public class SearchController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<?>> filterAppointments(
             @RequestBody AppointmentFilterRequest request) {
+        User user = authz.getCurrentUser();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        } else if (user.getRole() == Role.DOCTOR) {
+            request.setDoctorId(user.getId());
+        }
         return ResponseEntity.ok(searchService.filterAppointments(request));
     }
     
@@ -78,7 +88,18 @@ public class SearchController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<?>> filterAppointmentsByStatus(
             @PathVariable String status) {
-        return ResponseEntity.ok(searchService.filterAppointmentsByStatus(status));
+        User user = authz.getCurrentUser();
+        AppointmentFilterRequest request = AppointmentFilterRequest.builder()
+                .status(status)
+                .limit(20)
+                .offset(0)
+                .build();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        } else if (user.getRole() == Role.DOCTOR) {
+            request.setDoctorId(user.getId());
+        }
+        return ResponseEntity.ok(searchService.filterAppointments(request));
     }
     
     /**
@@ -90,7 +111,19 @@ public class SearchController {
     public ResponseEntity<SearchResultsWrapper<?>> filterAppointmentsByDateRange(
             @RequestParam String startDate,
             @RequestParam String endDate) {
-        return ResponseEntity.ok(searchService.filterAppointmentsByDateRange(startDate, endDate));
+        User user = authz.getCurrentUser();
+        AppointmentFilterRequest request = AppointmentFilterRequest.builder()
+                .startDate(startDate)
+                .endDate(endDate)
+                .limit(20)
+                .offset(0)
+                .build();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        } else if (user.getRole() == Role.DOCTOR) {
+            request.setDoctorId(user.getId());
+        }
+        return ResponseEntity.ok(searchService.filterAppointments(request));
     }
     
     // ==================== Prescription Filter Endpoints ====================
@@ -102,6 +135,12 @@ public class SearchController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<?>> filterPrescriptions(
             @RequestBody PrescriptionFilterRequest request) {
+        User user = authz.getCurrentUser();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        } else if (user.getRole() == Role.DOCTOR) {
+            request.setDoctorId(user.getId());
+        }
         return ResponseEntity.ok(searchService.filterPrescriptions(request));
     }
     
@@ -112,7 +151,16 @@ public class SearchController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<?>> filterPrescriptionsByDoctor(
             @PathVariable String doctorId) {
-        return ResponseEntity.ok(searchService.filterPrescriptionsByDoctor(doctorId));
+        User user = authz.getCurrentUser();
+        PrescriptionFilterRequest request = PrescriptionFilterRequest.builder()
+                .doctorId(doctorId)
+                .limit(20)
+                .offset(0)
+                .build();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        }
+        return ResponseEntity.ok(searchService.filterPrescriptions(request));
     }
     
     /**
@@ -122,6 +170,17 @@ public class SearchController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<?>> filterPrescriptionsByMedicine(
             @PathVariable String medicine) {
-        return ResponseEntity.ok(searchService.filterPrescriptionsByMedicine(medicine));
+        User user = authz.getCurrentUser();
+        PrescriptionFilterRequest request = PrescriptionFilterRequest.builder()
+                .medicine(medicine)
+                .limit(20)
+                .offset(0)
+                .build();
+        if (user.getRole() == Role.PATIENT) {
+            request.setPatientId(user.getId());
+        } else if (user.getRole() == Role.DOCTOR) {
+            request.setDoctorId(user.getId());
+        }
+        return ResponseEntity.ok(searchService.filterPrescriptions(request));
     }
 }

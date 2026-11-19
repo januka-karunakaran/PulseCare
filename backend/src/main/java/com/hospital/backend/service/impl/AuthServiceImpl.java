@@ -86,37 +86,29 @@ public class AuthServiceImpl implements AuthService {
             throw new BadRequestException("Incorrect verification code");
         }
 
+        if (request.getRole() != null && !request.getRole().trim().isEmpty()) {
+            if (!request.getRole().trim().equalsIgnoreCase("PATIENT")) {
+                throw new BadRequestException("Public registration only allows PATIENT role. Privileged accounts must be provisioned by an administrator.");
+            }
+        }
+
         User user = User.builder()
                 .fullName(request.getFullName())
                 .email(normalizedEmail)
                 .password(passwordEncoder.encode(request.getPassword()))
-                .role(Role.valueOf(request.getRole().toUpperCase()))
+                .role(Role.PATIENT)
                 .build();
 
         user = userRepository.save(user);
 
-        if (user.getRole() == Role.DOCTOR) {
-            Doctor doctor = Doctor.builder()
-                    .id(user.getId())
-                    .userId(user.getId())
-                    .fullName(user.getFullName())
-                    .email(user.getEmail())
-                    .specialization(user.getSpecialization() != null
-                            ? user.getSpecialization()
-                            : "General Medicine")
-                    .status("ACTIVE")
-                    .build();
-            doctorRepository.save(doctor);
-        } else if (user.getRole() == Role.PATIENT) {
-            Patient patient = Patient.builder()
-                    .userId(user.getId())
-                    .fullName(user.getFullName())
-                    .email(user.getEmail())
-                    .phone(user.getPhoneNumber())
-                    .address(user.getAddress())
-                    .build();
-            patientRepository.save(patient);
-        }
+        Patient patient = Patient.builder()
+                .userId(user.getId())
+                .fullName(user.getFullName())
+                .email(user.getEmail())
+                .phone(user.getPhoneNumber())
+                .address(user.getAddress())
+                .build();
+        patientRepository.save(patient);
         emailVerificationCodeRepository.deleteByEmail(normalizedEmail);
         return "Signup successful";
     }
@@ -211,6 +203,7 @@ public class AuthServiceImpl implements AuthService {
         User user = userRepository.findById(resetToken.getUserId())
                 .orElseThrow(() -> new BadRequestException("This reset link is invalid or has expired"));
         user.setPassword(passwordEncoder.encode(password));
+        user.setTokenInvalidBefore(Instant.now());
         userRepository.save(user);
         passwordResetTokenRepository.deleteByUserId(user.getId());
         refreshTokenService.deleteByUserId(user.getId());

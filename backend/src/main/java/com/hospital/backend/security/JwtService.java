@@ -20,11 +20,26 @@ import java.util.function.Function;
 @RequiredArgsConstructor
 public class JwtService {
 
-    @Value("${jwt.secret:my-secret-key-change-this-in-production-environment-variables}")
+    @Value("${jwt.secret:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}")
     private String secretKey;
 
     @Value("${jwt.expiration:86400000}") // 24 hours in milliseconds
     private long jwtExpiration;
+
+    @Value("${spring.profiles.active:dev}")
+    private String activeProfile;
+
+    @jakarta.annotation.PostConstruct
+    public void validateSecretKey() {
+        if (activeProfile != null && activeProfile.contains("prod")) {
+            if (secretKey == null || secretKey.isBlank() || secretKey.length() < 32
+                    || secretKey.contains("change-me")
+                    || secretKey.contains("change-this-in-production")
+                    || "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970".equals(secretKey)) {
+                throw new IllegalStateException("FATAL: In production profile, a unique and secure JWT_SECRET of at least 256 bits (32 characters) must be configured.");
+            }
+        }
+    }
 
     public String generateToken(UserDetails userDetails, String role) {
         Map<String, Object> claims = new HashMap<>();
@@ -47,9 +62,25 @@ public class JwtService {
         return extractAllClaims(token).get("role", String.class);
     }
 
+    public Date extractIssuedAt(String token) {
+        return extractClaim(token, Claims::getIssuedAt);
+    }
+
     public boolean isTokenValid(String token, UserDetails userDetails) {
         final String username = extractUsername(token);
-        return username.equals(userDetails.getUsername()) && !isTokenExpired(token);
+        if (!username.equals(userDetails.getUsername()) || isTokenExpired(token)) {
+            return false;
+        }
+
+        if (userDetails instanceof com.hospital.backend.model.User user) {
+            if (user.getTokenInvalidBefore() != null) {
+                Date issuedAt = extractIssuedAt(token);
+                if (issuedAt != null && issuedAt.toInstant().isBefore(user.getTokenInvalidBefore())) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private boolean isTokenExpired(String token) {

@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { Client } from "@stomp/stompjs";
 import SockJS from "sockjs-client";
-import { getUser } from "@/utils/auth";
+import { getUser, getAccessToken } from "@/utils/auth";
 import { WS_BASE } from "@/utils/constants";
 
 export default function NotificationListener({ onNotificationReceived }) {
@@ -26,8 +26,10 @@ export default function NotificationListener({ onNotificationReceived }) {
 
     let client;
     try {
+      const token = getAccessToken();
       client = new Client({
         webSocketFactory: () => new SockJS(endpoint),
+        connectHeaders: token ? { Authorization: `Bearer ${token}` } : {},
         debug: (str) => {
           if (process.env.NODE_ENV === "development") {
             console.log("[STOMP]", str);
