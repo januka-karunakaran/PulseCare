@@ -15,47 +15,53 @@ import org.springframework.data.mongodb.core.index.Index;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.MongoDBContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Real MongoDB Integration & Concurrency Test for Refresh Tokens.
+ * Uses an isolated, disposable Testcontainers container per test execution.
+ * Fail-closed: Never connects or falls back to any shared, local, or production database.
+ */
 @SpringBootTest
 @ActiveProfiles("test")
-@TestPropertySource(properties = {
-        "spring.data.mongodb.database=hospital_management_test_isolated"
-})
+@Testcontainers(disabledWithoutDocker = false)
 public class RefreshTokenMongoIntegrationTest {
 
-    private static MongoDBContainer mongoDBContainer;
+    private static final String ISOLATED_TEST_DB = "disposable_test_" + UUID.randomUUID().toString().replace("-", "");
 
-    @BeforeAll
-    public static void startContainer() {
-        try {
-            if (DockerClientFactory.instance().isDockerAvailable()) {
-                mongoDBContainer = new MongoDBContainer("mongo:7.0");
-                mongoDBContainer.start();
-                System.setProperty("spring.data.mongodb.uri",
-                        mongoDBContainer.getReplicaSetUrl("hospital_management_test_isolated"));
-            }
-        } catch (Throwable t) {
-            System.out.println("Testcontainers Docker not available, falling back to local test database: " + t.getMessage());
+    @Container
+    private static final MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
+
+    @DynamicPropertySource
+    static void setMongoProperties(DynamicPropertyRegistry registry) {
+        if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
+            registry.add("spring.data.mongodb.uri", () -> mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB));
+            registry.add("spring.data.mongodb.database", () -> ISOLATED_TEST_DB);
+        } else {
+            // Fail closed: Do NOT fallback to localhost:27017 or any shared database.
+            registry.add("spring.data.mongodb.uri", () -> "mongodb://fail-closed-docker-required:27017/" + ISOLATED_TEST_DB);
+            registry.add("spring.data.mongodb.database", () -> ISOLATED_TEST_DB);
         }
     }
 
-    @AfterAll
-    public static void stopContainer() {
-        if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
-            try {
-                mongoDBContainer.stop();
-            } catch (Exception ignored) {
-            }
+    @BeforeAll
+    public static void verifyDockerAvailable() {
+        if (!DockerClientFactory.instance().isDockerAvailable()) {
+            throw new IllegalStateException("FAIL-CLOSED TEST ISOLATION: Docker is required for RefreshTokenMongoIntegrationTest "
+                    + "to run safely inside an isolated Testcontainers disposable database. Local shared database fallback is strictly prohibited.");
         }
     }
 
@@ -70,27 +76,28 @@ public class RefreshTokenMongoIntegrationTest {
 
     @BeforeEach
     public void setup() {
-        try {
-            // Verify MongoDB connectivity
-            mongoTemplate.getDb().runCommand(new Document("ping", 1));
-        } catch (Exception e) {
-            Assumptions.assumeTrue(false, "MongoDB is unavailable at runtime: " + e.getMessage());
+        if (mongoDBContainer == null || !mongoDBContainer.isRunning()) {
+            throw new IllegalStateException("FAIL-CLOSED SAFETY GUARD: Disposable Testcontainers MongoDB instance is NOT running. "
+                    + "Refusing to execute integration tests against unisolated databases.");
         }
 
         String dbName = mongoTemplate.getDb().getName();
 
         // FAIL-CLOSED SAFETY GUARD:
-        // Refuse to execute destructive operations against non-test or production databases
+        // Refuse to execute destructive operations against non-disposable, shared, or production databases
         if (dbName == null
-                || !dbName.toLowerCase().contains("test")
+                || !dbName.startsWith("disposable_test_")
                 || dbName.equalsIgnoreCase("hospital_management_db")
                 || dbName.toLowerCase().contains("prod")) {
             throw new IllegalStateException("CRITICAL SAFETY GUARD VIOLATION: Integration tests must run against an "
-                    + "isolated test database containing 'test'. Current connected database is '" + dbName
+                    + "isolated disposable test database starting with 'disposable_test_'. Current connected database is '" + dbName
                     + "'. Aborting destructive commands!");
         }
 
-        // Safe cleanup affecting ONLY the isolated test collection
+        // Verify MongoDB connectivity
+        mongoTemplate.getDb().runCommand(new Document("ping", 1));
+
+        // Safe cleanup affecting ONLY the disposable test database
         mongoTemplate.dropCollection(RefreshToken.class);
         mongoTemplate.indexOps(RefreshToken.class).ensureIndex(
                 new Index().on("token", Sort.Direction.ASC).unique()
@@ -105,7 +112,7 @@ public class RefreshTokenMongoIntegrationTest {
     public void cleanup() {
         try {
             String dbName = mongoTemplate.getDb().getName();
-            if (dbName != null && dbName.toLowerCase().contains("test")
+            if (dbName != null && dbName.startsWith("disposable_test_")
                     && !dbName.equalsIgnoreCase("hospital_management_db")
                     && !dbName.toLowerCase().contains("prod")) {
                 mongoTemplate.dropCollection(RefreshToken.class);
@@ -167,7 +174,7 @@ public class RefreshTokenMongoIntegrationTest {
         assertEquals(1, successCount.get(), "Database-enforced atomicity must ensure exactly one request succeeds");
         assertEquals(threadCount - 1, expectedFailureCount.get(), "All other concurrent requests must fail with expected BadRequestException");
 
-        // The old token must no longer exist in the database (queried by token field, NOT _id)
+        // The old token must no longer exist in the database (queried by token field, NOT document _id)
         String hashedOldToken = RefreshTokenServiceImpl.hashToken(rawToken);
         Query oldTokenQuery = Query.query(Criteria.where("token").is(hashedOldToken));
         assertNull(mongoTemplate.findOne(oldTokenQuery, RefreshToken.class),
