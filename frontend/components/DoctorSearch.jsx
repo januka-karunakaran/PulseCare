@@ -175,14 +175,31 @@ export default function DoctorSearch() {
             </div>
           </div>
 
-          {/* Search Button */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition flex items-center justify-center gap-2"
-          >
-            <FaSearch /> {isLoading ? "Searching..." : "Search Doctors"}
-          </button>
+          {/* Search and Reset Buttons */}
+          <div className="flex gap-3">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition flex items-center justify-center gap-2"
+            >
+              <FaSearch /> {isLoading ? "Searching..." : "Search Doctors"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSearchTerm("");
+                setSpecialization("");
+                setMinRating(0);
+                setSortBy("name");
+                setResults([]);
+                setHasSearched(false);
+                setError("");
+              }}
+              className="px-6 py-3 border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold rounded-lg transition"
+            >
+              Reset
+            </button>
+          </div>
         </form>
 
         {/* Popular Specialties */}

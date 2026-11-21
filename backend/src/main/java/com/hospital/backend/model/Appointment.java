@@ -2,6 +2,8 @@ package com.hospital.backend.model;
 
 import lombok.*;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 @Document(collection = "appointments")
@@ -9,6 +11,11 @@ import org.springframework.data.mongodb.core.mapping.Document;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@CompoundIndexes({
+    @CompoundIndex(name = "appt_doc_date_idx", def = "{'doctorId': 1, 'appointmentDate': 1}"),
+    @CompoundIndex(name = "appt_patient_date_idx", def = "{'patientId': 1, 'appointmentDate': 1}"),
+    @CompoundIndex(name = "appt_status_date_idx", def = "{'status': 1, 'appointmentDate': 1}")
+})
 public class Appointment {
 
     @Id

@@ -132,14 +132,32 @@ export default function PrescriptionFilter() {
             </div>
           </div>
 
-          {/* Filter Button */}
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition flex items-center justify-center gap-2"
-          >
-            <FaFilter /> {isLoading ? "Filtering..." : "Apply Filter"}
-          </button>
+          {/* Filter and Reset Buttons */}
+          <div className="flex gap-3">
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="flex-1 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white font-semibold py-3 rounded-lg transition flex items-center justify-center gap-2"
+            >
+              <FaFilter /> {isLoading ? "Filtering..." : "Apply Filter"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setStatus("");
+                setMedicine("");
+                setStartDate("");
+                setEndDate("");
+                setSortBy("date");
+                setResults([]);
+                setHasSearched(false);
+                setError("");
+              }}
+              className="px-6 py-3 border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold rounded-lg transition"
+            >
+              Reset
+            </button>
+          </div>
         </form>
 
         {/* Quick Filter Buttons */}

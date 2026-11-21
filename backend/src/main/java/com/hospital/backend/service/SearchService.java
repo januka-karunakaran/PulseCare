@@ -13,6 +13,7 @@ public interface SearchService {
     SearchResultsWrapper<SearchDoctorResponse> searchDoctorsByName(String name);
     
     // Patient Search Methods
+    SearchResultsWrapper<ProfileResponse> searchPatients(String searchTerm, Integer limit, Integer offset);
     SearchResultsWrapper<ProfileResponse> searchPatients(String searchTerm);
     
     // Appointment Filter Methods

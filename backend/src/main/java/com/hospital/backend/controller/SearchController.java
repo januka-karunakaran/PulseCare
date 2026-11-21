@@ -54,13 +54,15 @@ public class SearchController {
     }
 
     /**
-     * Search patients by name, email or phone
+     * Search patients by name, email or phone (role-restricted)
      */
     @GetMapping("/patients")
     @PreAuthorize("hasAnyRole('DOCTOR', 'ADMIN')")
     public ResponseEntity<SearchResultsWrapper<ProfileResponse>> searchPatients(
-            @RequestParam String searchTerm) {
-        return ResponseEntity.ok(searchService.searchPatients(searchTerm));
+            @RequestParam String searchTerm,
+            @RequestParam(required = false, defaultValue = "20") Integer limit,
+            @RequestParam(required = false, defaultValue = "0") Integer offset) {
+        return ResponseEntity.ok(searchService.searchPatients(searchTerm, limit, offset));
     }
     
     // ==================== Appointment Filter Endpoints ====================
