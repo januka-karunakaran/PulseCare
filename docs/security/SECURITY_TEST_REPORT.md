@@ -32,10 +32,11 @@ The backend test suite executes **41 tests across 9 test classes**, with a 100% 
 ## 2. Test Database Isolation Architecture & Destructive Safeguards
 
 ### A. Isolated Test Database Configuration
-- **Property Profile:** `@ActiveProfiles("test")` loads `application-test.properties`, setting `spring.data.mongodb.database=hospital_management_test_isolated`.
-- **Testcontainers Dynamic Discovery:** `RefreshTokenMongoIntegrationTest` dynamically initializes a disposable `MongoDBContainer("mongo:7.0")` when Docker is active, automatically setting `spring.data.mongodb.uri` to the container replica set.
+- **Property Profile:** `@ActiveProfiles("test")` loads `application-test.properties`.
+- **Testcontainers Dynamic Discovery:** `RefreshTokenMongoIntegrationTest` dynamically initializes an isolated, disposable `MongoDBContainer("mongo:7.0")` with dynamic database naming (`disposable_test_<uuid>`). Dynamic properties `@DynamicPropertySource` bind `spring.data.mongodb.uri` to the container's replica set URL.
 - **Fail-Closed Destructive Safeguard:**
-  Before executing any destructive operation (`dropCollection` or `dropDatabase`), the test suite inspects `mongoTemplate.getDb().getName()`. If the connected database does not contain `"test"`, or if it matches `"hospital_management_db"` or contains `"prod"`, the test throws an immediate `IllegalStateException` and halts to guarantee development and production databases are never modified or dropped.
+  - Zero tolerance for shared database fallback: If Docker is unavailable, the test fails closed immediately with an `IllegalStateException` rather than silently falling back to `localhost:27017` or any shared database.
+  - Before executing any destructive operation (`dropCollection` or `dropDatabase`), the test suite inspects `mongoTemplate.getDb().getName()`. If the connected database does not start with `"disposable_test_"` or contains `"prod"` or matches `"hospital_management_db"`, the test throws an immediate `IllegalStateException` and halts.
 
 ### B. Corrected Test Assertions
 1. **Old Token Removal:**

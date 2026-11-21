@@ -1,13 +1,13 @@
 services:
   # ==========================================
-  # MongoDB Database Service
+  # MongoDB Database Service (Development)
   # ==========================================
   mongodb:
     image: mongo:7.0
     container_name: hms-mongodb
     restart: unless-stopped
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:27017:27017" # Bound strictly to localhost loopback
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-devMongoPassword123}
@@ -21,9 +21,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1024M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ==========================================
-  # Spring Boot Backend Service
+  # Spring Boot Backend Service (Development)
   # ==========================================
   backend:
     build:
@@ -46,9 +56,25 @@ services:
         condition: service_healthy
     networks:
       - hms-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health/readiness"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1024M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ==========================================
-  # Next.js Frontend Service
+  # Next.js Frontend Service (Development)
   # ==========================================
   frontend:
     build:
@@ -63,15 +89,33 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: production
+      PORT: 3000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - hms-network
-
-networks:
-  hms-network:
-    driver: bridge
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mongodb_data:
     driver: local
+
+networks:
+  hms-network:
+    driver: bridge

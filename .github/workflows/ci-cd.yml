@@ -2,16 +2,17 @@ name: Hospital Management System CI/CD
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
-      - Januka
       - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: hms-${{ github.workflow }}-${{ github.ref }}
+  group: hms-deploy-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,14 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mongodb:
-        image: mongo:7
+        image: mongo:7.0
         ports:
           - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
     defaults:
       run:
         working-directory: backend
@@ -48,12 +44,9 @@ jobs:
       - name: Run backend tests
         run: ./mvnw -B test
         env:
-          TEST_MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
-          TEST_MONGODB_DATABASE: hospital_management_test_isolated
-          MONGODB_URI: mongodb://localhost:27017/hospital_management_test_isolated
-          MONGODB_DATABASE: hospital_management_test_isolated
           MAIL_ENABLED: 'false'
-          JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy
+          JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
+          DOCKER_API_VERSION: '1.44'
 
   frontend:
     name: Frontend checks
@@ -82,11 +75,11 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_API_BASE: http://localhost:8080/api
-          NEXT_PUBLIC_WS_URL: http://localhost:8080
+          NEXT_PUBLIC_WS_URL: ws://localhost:8080/ws
 
   publish-images:
     name: Publish Docker images
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/Januka' || github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
       - backend
       - frontend

@@ -6,7 +6,7 @@ import com.hospital.backend.service.PdfService;
 import com.hospital.backend.service.PrescriptionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -19,7 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@WebMvcTest(PrescriptionController.class)
 @AutoConfigureMockMvc(addFilters = false)
 public class PrescriptionControllerTest {
 
@@ -34,6 +34,12 @@ public class PrescriptionControllerTest {
 
     @MockBean
     private AuthorizationService authz;
+
+    @MockBean
+    private com.hospital.backend.security.JwtService jwtService;
+
+    @MockBean
+    private com.hospital.backend.security.CustomUserDetailsService customUserDetailsService;
 
     @Test
     public void downloadPrescriptionPdf_ReturnsPdfAndHeaders() throws Exception {

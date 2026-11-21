@@ -1,12 +1,18 @@
-# Local databases and runtime data
+# Local databases, dumps, and runtime data
 .data/
 *.log
+*.dump
+*.tar.gz
+dumps/
+backups/
 
-# Environment variables
+# Environment variables and secrets
 .env
-backend/.env
-frontend/.env.local
-frontend/.env*.local
+.env.*
+.env*.local
+*.pem
+*.key
+application-secret.properties
 
 # OS files
 .DS_Store
