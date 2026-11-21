@@ -43,7 +43,7 @@ jobs:
 
       - name: Run Backend Unit & Integration Tests
         working-directory: ./backend
-        run: ./mvnw -B test
+        run: ./mvnw -B test || mvn -B test
         env:
           MAIL_ENABLED: 'false'
           JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build Production JAR
         working-directory: ./backend
-        run: ./mvnw -B package -DskipTests
+        run: ./mvnw -B package -DskipTests || mvn -B package -DskipTests
 
   # ========================================================
   # Frontend Quality Gate: Dependency Check, Lint & Build

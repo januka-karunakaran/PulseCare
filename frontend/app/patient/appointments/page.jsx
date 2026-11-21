@@ -113,7 +113,20 @@ export default function PatientAppointmentsPage() {
       });
       setSlotInfo(null);
     } catch (err) {
-      setError(err.message || "Booking failed");
+      const isSlotConflict = err.status === 409 || err.code === "APPOINTMENT_SLOT_CONFLICT" || (err.message && err.message.toLowerCase().includes("slot"));
+      if (isSlotConflict) {
+        setError("This slot is no longer available. Please select another time.");
+        setForm((prev) => ({ ...prev, appointmentTime: "" }));
+        if (form.doctorId && form.appointmentDate) {
+          setSlotsLoading(true);
+          getAvailableSlots(form.doctorId, form.appointmentDate)
+            .then(setSlotInfo)
+            .catch(() => {})
+            .finally(() => setSlotsLoading(false));
+        }
+      } else {
+        setError(err.message || "Booking failed");
+      }
     } finally {
       setLoading(false);
     }

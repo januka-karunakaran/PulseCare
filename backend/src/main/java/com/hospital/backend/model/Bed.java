@@ -17,4 +17,5 @@ public class Bed {
     private String status; // AVAILABLE, OCCUPIED, MAINTENANCE
     private Double pricePerDay;
     private String ward;
+    private String currentBookingId;
 }

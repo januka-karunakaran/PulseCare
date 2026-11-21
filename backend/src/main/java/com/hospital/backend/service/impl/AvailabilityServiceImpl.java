@@ -3,9 +3,11 @@ package com.hospital.backend.service.impl;
 import com.hospital.backend.dto.DoctorAvailabilityDTO;
 import com.hospital.backend.dto.AvailableSlotsResponse;
 import com.hospital.backend.model.Appointment;
+import com.hospital.backend.model.AppointmentSlotReservation;
 import com.hospital.backend.model.Availability;
 import com.hospital.backend.model.Doctor;
 import com.hospital.backend.repository.AppointmentRepository;
+import com.hospital.backend.repository.AppointmentSlotReservationRepository;
 import com.hospital.backend.repository.AvailabilityRepository;
 import com.hospital.backend.repository.DoctorRepository;
 import com.hospital.backend.service.AvailabilityService;
@@ -25,6 +27,7 @@ public class AvailabilityServiceImpl implements AvailabilityService {
 
     private final AvailabilityRepository availabilityRepository;
     private final AppointmentRepository appointmentRepository;
+    private final AppointmentSlotReservationRepository slotReservationRepository;
     private final DoctorRepository doctorRepository;
 
     @Override
@@ -93,13 +96,22 @@ public class AvailabilityServiceImpl implements AvailabilityService {
                 .flatMap(item -> item.getTimeSlots().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-        List<Appointment> dailyAppointments = appointmentRepository
-                .findByDoctorIdAndAppointmentDate(doctorId, date).stream()
+        List<Appointment> dailyAppointments = doctorIdentifiers.stream()
+                .flatMap(id -> appointmentRepository.findByDoctorIdAndAppointmentDate(id, date).stream())
                 .filter(item -> !isInactive(item.getStatus()))
+                .distinct()
                 .collect(Collectors.toList());
         Set<String> bookedSlots = dailyAppointments.stream()
                 .map(Appointment::getAppointmentTime)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        // Also check any active slot reservations in database
+        Set<String> reservedSlots = doctorIdentifiers.stream()
+                .flatMap(id -> slotReservationRepository.findByDoctorIdAndAppointmentDate(id, date).stream())
+                .map(AppointmentSlotReservation::getAppointmentTime)
+                .collect(Collectors.toSet());
+        bookedSlots.addAll(reservedSlots);
+
         List<String> openSlots = configuredSlots.stream()
                 .filter(slot -> !bookedSlots.contains(slot))
                 .collect(Collectors.toCollection(ArrayList::new));
