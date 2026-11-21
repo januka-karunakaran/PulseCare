@@ -82,6 +82,37 @@ export async function searchDoctorsByName(name, token) {
   return response.json();
 }
 
+/**
+ * Search patients by name, email or phone (role-restricted)
+ * @param {string} searchTerm - Search keyword
+ * @param {string} token - JWT authentication token
+ * @param {number} limit - Maximum results (default 20, max 100)
+ * @param {number} offset - Offset pagination (default 0)
+ * @returns {Promise<Object>} Search results
+ */
+export async function searchPatients(searchTerm, token, limit = 20, offset = 0) {
+  if (!token) throw new Error("Authentication token required");
+
+  const params = new URLSearchParams({
+    searchTerm: searchTerm || "",
+    limit: limit.toString(),
+    offset: offset.toString(),
+  });
+
+  const response = await fetch(`${API_BASE}/search/patients?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || "Failed to search patients");
+  }
+
+  return response.json();
+}
+
 // ==================== Appointment Filtering ====================
 
 /**
