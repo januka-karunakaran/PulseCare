@@ -12,7 +12,7 @@ Domain Class: `com.hospital.backend.model.Appointment`
 
 | Index Name | Key Definition | Purpose / Target Queries | ESR Alignment |
 | :--- | :--- | :--- | :--- |
-| `appt_doc_date_idx` | `{"doctorId": 1, "appointmentDate": 1}` | Doctor schedule filtering, upcoming appointments by doctor | Equality (`doctorId`), Range/Sort (`appointmentDate`) |
+| `appt_doc_date_idx` | `{"doctorId": 1, "appointmentDate": 1}` | Doctor schedule filtering, upcoming appointments, aggregation | Equality (`doctorId`), Range/Sort (`appointmentDate`) |
 | `appt_patient_date_idx` | `{"patientId": 1, "appointmentDate": 1}` | Patient appointment history, upcoming patient visits | Equality (`patientId`), Range/Sort (`appointmentDate`) |
 | `appt_status_date_idx` | `{"status": 1, "appointmentDate": 1}` | Admin operational filters, daily status queues | Equality (`status`), Range/Sort (`appointmentDate`) |
 
@@ -21,9 +21,9 @@ Domain Class: `com.hospital.backend.model.Prescription`
 
 | Index Name | Key Definition | Purpose / Target Queries | ESR Alignment |
 | :--- | :--- | :--- | :--- |
-| `presc_doc_created_idx` | `{"doctorId": 1, "createdAt": -1}` | Doctor prescription logs sorted newest first | Equality (`doctorId`), Sort (`createdAt`) |
-| `presc_patient_created_idx` | `{"patientId": 1, "createdAt": -1}` | Patient medication history sorted newest first | Equality (`patientId`), Sort (`createdAt`) |
-| `presc_medicines_idx` | `{"medicines": 1}` | Multikey index for medicine keyword searches | Multikey element match |
+| `presc_doc_created_idx` | `{"doctorId": 1, "createdAt": 1}` | Doctor prescription logs sorted chronologically | Equality (`doctorId`), Sort (`createdAt`) |
+| `presc_patient_created_idx` | `{"patientId": 1, "createdAt": 1}` | Patient medication history sorted chronologically | Equality (`patientId`), Sort (`createdAt`) |
+| `presc_medicines_idx` | `{"medicines": 1}` | Multikey index for medicine keyword array searches | Multikey element match |
 
 ### C. Collection: `doctors`
 Domain Class: `com.hospital.backend.model.Doctor`
@@ -43,21 +43,7 @@ Domain Class: `com.hospital.backend.model.User`
 
 ---
 
-## 3. Index Lifecycle & Application Startup
-Spring Boot Data MongoDB manages index creation automatically via `@CompoundIndexes` on domain classes when auto-index creation is enabled in non-production environments (`spring.data.mongodb.auto-index-creation=true`). In production environments, database administrators can verify or apply these indexes using the MongoDB shell:
-
-```javascript
-db.appointments.createIndex({ doctorId: 1, appointmentDate: 1 }, { name: "appt_doc_date_idx" });
-db.appointments.createIndex({ patientId: 1, appointmentDate: 1 }, { name: "appt_patient_date_idx" });
-db.appointments.createIndex({ status: 1, appointmentDate: 1 }, { name: "appt_status_date_idx" });
-
-db.prescriptions.createIndex({ doctorId: 1, createdAt: -1 }, { name: "presc_doc_created_idx" });
-db.prescriptions.createIndex({ patientId: 1, createdAt: -1 }, { name: "presc_patient_created_idx" });
-db.prescriptions.createIndex({ medicines: 1 }, { name: "presc_medicines_idx" });
-
-db.doctors.createIndex({ specialization: 1, rating: -1 }, { name: "doctor_spec_rating_idx" });
-db.doctors.createIndex({ rating: -1 }, { name: "doctor_rating_idx" });
-
-db.users.createIndex({ role: 1, fullName: 1 }, { name: "user_role_name_idx" });
-db.users.createIndex({ role: 1, specialization: 1 }, { name: "user_role_spec_idx" });
-```
+## 3. Query Plan & Regex Considerations
+- Substring regex searches (e.g. `.*name.*`) cannot leverage B-tree index prefixes; however, equality prefixes on `role: "DOCTOR"` in `user_role_name_idx` constrain the initial candidate scan to only doctor users before regex evaluation.
+- Medicine searches on `prescriptions.medicines` utilize the multikey array index `presc_medicines_idx`.
+- Appointment count aggregations on `appointments` utilize `appt_doc_date_idx` for index-covered matching on `doctorId`.

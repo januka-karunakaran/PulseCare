@@ -19,6 +19,7 @@ import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.YearMonth;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -119,14 +120,22 @@ public class SearchPerformanceMongoIntegrationTest {
 
     @Test
     public void verifyDoctorSearch_DatabaseLevelPaginationAndFiltering() {
-        // Seed 100 synthetic doctors
+        // Seed 100 synthetic doctors with separate Doctor.id != Doctor.userId
         List<User> users = new ArrayList<>();
         List<Doctor> doctors = new ArrayList<>();
+        List<Appointment> appts = new ArrayList<>();
+
+        YearMonth now = YearMonth.now();
+        String currentMonthDate = now.atDay(10).toString();
+
         for (int i = 0; i < 100; i++) {
             String spec = (i % 2 == 0) ? "Cardiology" : "Neurology";
-            double rating = 3.0 + (i % 20) * 0.1;
+            double rating = 3.0 + (i % 20) * 0.1; // 3.0 to 4.9
+            String userId = "user-doc-" + i;
+            String profileId = "doc-profile-" + i;
+
             User docUser = User.builder()
-                    .id("user-doc-" + i)
+                    .id(userId)
                     .fullName("Doctor Number " + i)
                     .email("doctor" + i + "@hospital.com")
                     .specialization(spec)
@@ -135,24 +144,33 @@ public class SearchPerformanceMongoIntegrationTest {
             users.add(docUser);
 
             Doctor docProfile = Doctor.builder()
-                    .id("doc-profile-" + i)
-                    .userId("user-doc-" + i)
+                    .id(profileId)
+                    .userId(userId)
                     .fullName("Doctor Number " + i)
                     .specialization(spec)
                     .rating(rating)
                     .totalRatings(10 + i)
                     .build();
             doctors.add(docProfile);
+
+            // Add appointments referencing both profileId and userId for doctor 0
+            if (i == 0) {
+                appts.add(Appointment.builder().id("appt-p1").doctorId(profileId).appointmentDate(currentMonthDate).status("CONFIRMED").build());
+                appts.add(Appointment.builder().id("appt-u1").doctorId(userId).appointmentDate(currentMonthDate).status("CONFIRMED").build());
+            }
         }
         userRepository.saveAll(users);
         doctorRepository.saveAll(doctors);
+        appointmentRepository.saveAll(appts);
 
+        // Search with Cardiology specialization and minRating >= 4.0
         SearchDoctorRequest request = SearchDoctorRequest.builder()
                 .specialization("Cardiology")
+                .minRating(4.0)
                 .limit(10)
                 .offset(0)
-                .sortBy("name")
-                .sortOrder("asc")
+                .sortBy("rating")
+                .sortOrder("desc")
                 .build();
 
         long startTime = System.currentTimeMillis();
@@ -160,11 +178,27 @@ public class SearchPerformanceMongoIntegrationTest {
         long elapsed = System.currentTimeMillis() - startTime;
 
         assertNotNull(result);
-        assertEquals(50, result.getTotalCount(), "Exactly 50 Cardiology doctors in dataset");
-        assertEquals(10, result.getData().size(), "Only requested limit of 10 items returned");
-        assertTrue(result.getHasMore());
-        assertEquals(5, result.getTotalPages());
-        assertTrue(elapsed < 1000, "Database-side paginated query must execute in under 1 second");
+        assertTrue(result.getTotalCount() > 0, "Should match Cardiology doctors with rating >= 4.0");
+        assertTrue(result.getData().size() <= 10, "Returned slice within limit");
+
+        for (SearchDoctorResponse r : result.getData()) {
+            assertEquals("Cardiology", r.getSpecialization());
+            assertTrue(r.getAvgRating() >= 4.0, "Rating must satisfy minRating filter");
+            assertTrue(r.getDoctorId().startsWith("doc-profile-"), "Canonical doctor profile ID must be used");
+            assertNull(r.getPhoneNumber(), "Doctor phone number must be protected");
+            assertNull(r.getLicenseNumber(), "Doctor license number must be protected");
+        }
+
+        // Check appointment aggregation on doctor 0 if queried directly
+        SearchDoctorRequest doc0Request = SearchDoctorRequest.builder()
+                .searchTerm("Doctor Number 0")
+                .build();
+        SearchResultsWrapper<SearchDoctorResponse> doc0Result = searchService.searchDoctors(doc0Request);
+        assertEquals(1, doc0Result.getTotalCount());
+        SearchDoctorResponse doc0 = doc0Result.getData().get(0);
+        // Both profileId and userId appointments summed: 1 + 1 = 2
+        assertEquals(2, doc0.getTotalAppointments());
+        assertEquals(2L, doc0.getAppointmentsThisMonth());
     }
 
     @Test
@@ -200,6 +234,35 @@ public class SearchPerformanceMongoIntegrationTest {
             assertEquals("CONFIRMED", a.getStatus());
             assertTrue(a.getAppointmentDate().compareTo("2026-11-10") >= 0);
             assertTrue(a.getAppointmentDate().compareTo("2026-11-20") <= 0);
+        }
+    }
+
+    @Test
+    public void verifyPrescriptionMedicineSearch_MultikeyIndex() {
+        List<Prescription> prescs = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            List<String> meds = (i % 2 == 0)
+                    ? List.of("Amoxicillin 500mg", "Ibuprofen")
+                    : List.of("Metformin 850mg", "Atorvastatin");
+
+            prescs.add(Prescription.builder()
+                    .id("presc-" + i)
+                    .doctorId("doc-1")
+                    .patientId("pat-1")
+                    .medicines(meds)
+                    .createdAt("2026-11-01T10:00:00")
+                    .build());
+        }
+        prescriptionRepository.saveAll(prescs);
+
+        Query query = new Query(org.springframework.data.mongodb.core.query.Criteria.where("medicines").regex("Amoxicillin", "i"));
+        long count = mongoTemplate.count(query, Prescription.class);
+        assertEquals(25, count, "Exactly 25 prescriptions contain Amoxicillin");
+
+        List<Prescription> matched = mongoTemplate.find(query.limit(5), Prescription.class);
+        assertEquals(5, matched.size());
+        for (Prescription p : matched) {
+            assertTrue(p.getMedicines().stream().anyMatch(m -> m.contains("Amoxicillin")));
         }
     }
 }

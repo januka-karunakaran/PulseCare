@@ -7,6 +7,7 @@ import com.hospital.backend.model.*;
 import com.hospital.backend.repository.*;
 import com.hospital.backend.security.AuthorizationService;
 import com.hospital.backend.service.impl.SearchServiceImpl;
+import org.bson.Document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -14,6 +15,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.security.access.AccessDeniedException;
 
@@ -66,7 +69,8 @@ public class SearchServiceTest {
     // ==========================================
 
     @Test
-    public void searchDoctors_ValidCriteria_ReturnsPaginatedResults() {
+    @SuppressWarnings("unchecked")
+    public void searchDoctors_ValidCriteria_ReturnsPaginatedResultsWithCorrectProfileMapping() {
         SearchDoctorRequest request = SearchDoctorRequest.builder()
                 .searchTerm("House")
                 .specialization("Diagnostics")
@@ -74,28 +78,58 @@ public class SearchServiceTest {
                 .offset(0)
                 .build();
 
-        User docUser = User.builder()
-                .id("doc-1")
-                .fullName("Dr. Gregory House")
-                .specialization("Diagnostics")
-                .email("house@hospital.com")
-                .role(Role.DOCTOR)
-                .build();
+        // Doctor user document with distinct Doctor.id != Doctor.userId
+        Document doctorProfileDoc = new Document("_id", "doc-profile-canonical-1")
+                .append("userId", "doc-user-1")
+                .append("rating", 4.9)
+                .append("totalRatings", 42)
+                .append("experienceYears", 15);
 
-        when(mongoTemplate.count(any(Query.class), eq(User.class))).thenReturn(1L);
-        when(mongoTemplate.find(any(Query.class), eq(User.class))).thenReturn(List.of(docUser));
-        when(doctorRepository.findAllById(any())).thenReturn(List.of(
-                Doctor.builder().id("doc-1").fullName("Dr. Gregory House").rating(4.8).totalRatings(50).build()
-        ));
-        when(mongoTemplate.find(any(Query.class), eq(Appointment.class))).thenReturn(Collections.emptyList());
+        Document userDoc = new Document("_id", "doc-user-1")
+                .append("fullName", "Dr. Gregory House")
+                .append("specialization", "Diagnostics")
+                .append("email", "house@hospital.com")
+                .append("role", "DOCTOR")
+                .append("doctorProfile", doctorProfileDoc);
+
+        Document facetResultDoc = new Document("totalCount", List.of(new Document("count", 1L)))
+                .append("data", List.of(userDoc));
+
+        AggregationResults<Document> userAggResults = mock(AggregationResults.class);
+        when(userAggResults.getUniqueMappedResult()).thenReturn(facetResultDoc);
+
+        // Appointment counts for both canonical profile ID and user ID
+        Document apptCountProfile = new Document("_id", "doc-profile-canonical-1")
+                .append("totalCount", 7L)
+                .append("monthlyCount", 3L);
+        Document apptCountUser = new Document("_id", "doc-user-1")
+                .append("totalCount", 5L)
+                .append("monthlyCount", 2L);
+
+        AggregationResults<Document> apptAggResults = mock(AggregationResults.class);
+        when(apptAggResults.getMappedResults()).thenReturn(List.of(apptCountProfile, apptCountUser));
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("users"), eq(Document.class)))
+                .thenReturn(userAggResults);
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class)))
+                .thenReturn(apptAggResults);
 
         SearchResultsWrapper<SearchDoctorResponse> result = searchService.searchDoctors(request);
 
         assertNotNull(result);
         assertEquals(1, result.getTotalCount());
         assertEquals(1, result.getData().size());
-        assertEquals("Dr. Gregory House", result.getData().get(0).getName());
-        assertEquals(4.8, result.getData().get(0).getAvgRating());
+
+        SearchDoctorResponse docResponse = result.getData().get(0);
+        assertEquals("doc-profile-canonical-1", docResponse.getDoctorId(), "Must return canonical doctor profile ID");
+        assertEquals("Dr. Gregory House", docResponse.getName());
+        assertEquals(4.9, docResponse.getAvgRating());
+        assertEquals(42, docResponse.getTotalRatings());
+        // Sum across both identifiers: 7 + 5 = 12 total, 3 + 2 = 5 monthly
+        assertEquals(12, docResponse.getTotalAppointments());
+        assertEquals(5L, docResponse.getAppointmentsThisMonth());
+        assertNull(docResponse.getPhoneNumber(), "Personal phone must be protected in public directory");
+        assertNull(docResponse.getLicenseNumber(), "License number must be protected in public directory");
     }
 
     @Test
@@ -117,6 +151,15 @@ public class SearchServiceTest {
     public void searchDoctors_InvalidSortField_ThrowsBadRequest() {
         SearchDoctorRequest request = SearchDoctorRequest.builder().sortBy("maliciousField").build();
         assertThrows(BadRequestException.class, () -> searchService.searchDoctors(request));
+    }
+
+    @Test
+    public void searchDoctors_InvalidMinRating_ThrowsBadRequest() {
+        SearchDoctorRequest reqNegative = SearchDoctorRequest.builder().minRating(-1.0).build();
+        assertThrows(BadRequestException.class, () -> searchService.searchDoctors(reqNegative));
+
+        SearchDoctorRequest reqAboveFive = SearchDoctorRequest.builder().minRating(5.5).build();
+        assertThrows(BadRequestException.class, () -> searchService.searchDoctors(reqAboveFive));
     }
 
     // ==========================================
@@ -212,8 +255,6 @@ public class SearchServiceTest {
 
     @Test
     public void filterAppointments_InvalidDateRange_ThrowsBadRequest() {
-        when(authz.getCurrentUser()).thenReturn(adminUser);
-
         AppointmentFilterRequest request = AppointmentFilterRequest.builder()
                 .startDate("2026-12-31")
                 .endDate("2026-01-01") // start after end
@@ -224,8 +265,6 @@ public class SearchServiceTest {
 
     @Test
     public void filterAppointments_InvalidDateFormat_ThrowsBadRequest() {
-        when(authz.getCurrentUser()).thenReturn(adminUser);
-
         AppointmentFilterRequest request = AppointmentFilterRequest.builder()
                 .startDate("not-a-date")
                 .build();
@@ -264,4 +303,3 @@ public class SearchServiceTest {
         assertTrue(response.getData().get(0).getMedicines().contains("Amoxicillin"));
     }
 }
-

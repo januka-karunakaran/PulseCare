@@ -9,8 +9,12 @@ import com.hospital.backend.security.AuthorizationService;
 import com.hospital.backend.service.SearchService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationOperation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.security.access.AccessDeniedException;
@@ -64,14 +68,19 @@ public class SearchServiceImpl implements SearchService {
         int offset = pagination[0];
         int limit = pagination[1];
 
+        if (request.getMinRating() != null && (request.getMinRating() < 0.0 || request.getMinRating() > 5.0)) {
+            throw new BadRequestException("minRating must be between 0.0 and 5.0");
+        }
+
         Sort sort = buildDoctorSort(request.getSortBy(), request.getSortOrder());
 
-        Query query = new Query();
-        query.addCriteria(Criteria.where("role").is(Role.DOCTOR.name()));
+        // 1. Base criteria on users collection
+        List<Criteria> matchCriteria = new ArrayList<>();
+        matchCriteria.add(Criteria.where("role").is(Role.DOCTOR.name()));
 
         if (hasText(request.getSearchTerm())) {
             String escaped = escapeRegex(request.getSearchTerm());
-            query.addCriteria(new Criteria().orOperator(
+            matchCriteria.add(new Criteria().orOperator(
                     Criteria.where("fullName").regex(escaped, "i"),
                     Criteria.where("specialization").regex(escaped, "i")
             ));
@@ -79,81 +88,184 @@ public class SearchServiceImpl implements SearchService {
 
         if (hasText(request.getSpecialization())) {
             String escapedSpec = escapeRegex(request.getSpecialization());
-            query.addCriteria(Criteria.where("specialization").regex("^" + escapedSpec + "$", "i"));
+            matchCriteria.add(Criteria.where("specialization").regex("^" + escapedSpec + "$", "i"));
         }
 
+        Criteria initialMatch = matchCriteria.size() == 1
+                ? matchCriteria.get(0)
+                : new Criteria().andOperator(matchCriteria.toArray(new Criteria[0]));
+
+        // 2. Build Aggregation Operations for MongoDB-side join, filter, sort, and pagination
+        List<AggregationOperation> operations = new ArrayList<>();
+        operations.add(Aggregation.match(initialMatch));
+
+        // Lookup matching Doctor profile: matches either Doctor.userId == User._id or Doctor._id == User._id
+        AggregationOperation lookupOp = context -> new Document("$lookup",
+                new Document("from", "doctors")
+                        .append("let", new Document("uid", "$_id"))
+                        .append("pipeline", List.of(
+                                new Document("$match", new Document("$expr",
+                                        new Document("$or", List.of(
+                                                new Document("$eq", List.of("$userId", "$$uid")),
+                                                new Document("$eq", List.of("$_id", "$$uid"))
+                                        ))
+                                )),
+                                new Document("$limit", 1)
+                        ))
+                        .append("as", "doctorProfile")
+        );
+        operations.add(lookupOp);
+
+        // Unwind doctorProfile (preserve doctors who might not have a separate profile document yet)
+        operations.add(Aggregation.unwind("doctorProfile", true));
+
+        // Database-side minimum rating filter (avoids unbounded memory materialization)
         if (request.getMinRating() != null) {
-            if (request.getMinRating() < 0.0 || request.getMinRating() > 5.0) {
-                throw new BadRequestException("minRating must be between 0.0 and 5.0");
-            }
-            List<String> ratedDoctorUserIds = mongoTemplate.find(
-                    Query.query(Criteria.where("rating").gte(request.getMinRating())),
-                    Doctor.class
-            ).stream()
-                    .flatMap(d -> Stream.of(d.getId(), d.getUserId()))
-                    .filter(Objects::nonNull)
-                    .distinct()
-                    .collect(Collectors.toList());
-
-            if (ratedDoctorUserIds.isEmpty()) {
-                return emptyResult(limit, offset);
-            }
-            query.addCriteria(Criteria.where("_id").in(ratedDoctorUserIds));
+            operations.add(Aggregation.match(Criteria.where("doctorProfile.rating").gte(request.getMinRating())));
         }
 
-        long totalCount = mongoTemplate.count(query, User.class);
+        // Database-side sorting
+        operations.add(Aggregation.sort(sort));
+
+        // Database-side facet for totalCount and paginated window in a single round-trip
+        AggregationOperation facetOp = context -> new Document("$facet",
+                new Document("totalCount", List.of(new Document("$count", "count")))
+                        .append("data", List.of(
+                                new Document("$skip", offset),
+                                new Document("$limit", limit)
+                        ))
+        );
+        operations.add(facetOp);
+
+        Aggregation aggregation = Aggregation.newAggregation(operations);
+        AggregationResults<Document> results = mongoTemplate.aggregate(aggregation, "users", Document.class);
+        Document facetResult = results.getUniqueMappedResult();
+
+        if (facetResult == null) {
+            return emptyResult(limit, offset);
+        }
+
+        List<?> totalCountList = (List<?>) facetResult.get("totalCount");
+        long totalCount = 0;
+        if (totalCountList != null && !totalCountList.isEmpty()) {
+            Document countDoc = (Document) totalCountList.get(0);
+            Number cnt = (Number) countDoc.get("count");
+            totalCount = cnt != null ? cnt.longValue() : 0;
+        }
+
         if (totalCount == 0) {
             return emptyResult(limit, offset);
         }
 
-        query.with(sort).skip(offset).limit(limit);
-        List<User> doctorUsers = mongoTemplate.find(query, User.class);
+        List<?> dataList = (List<?>) facetResult.get("data");
+        if (dataList == null || dataList.isEmpty()) {
+            return emptyResult(limit, offset);
+        }
 
-        // Batch fetch Doctor profiles and monthly appointment counts to eliminate N+1 queries
-        List<String> doctorIds = doctorUsers.stream().map(User::getId).collect(Collectors.toList());
+        List<Document> doctorDocs = new ArrayList<>();
+        for (Object item : dataList) {
+            if (item instanceof Document) {
+                doctorDocs.add((Document) item);
+            }
+        }
 
-        Map<String, Doctor> profileMap = new HashMap<>();
-        doctorRepository.findAllById(doctorIds).forEach(d -> {
-            profileMap.put(d.getId(), d);
-            if (d.getUserId() != null) profileMap.put(d.getUserId(), d);
-        });
+        // 3. Collect identifier aliases for returned page slice to resolve appointment counts
+        Set<String> pageDoctorIds = new HashSet<>();
+        for (Document doc : doctorDocs) {
+            String userId = doc.getString("_id");
+            if (userId != null) pageDoctorIds.add(userId);
+            Document profile = (Document) doc.get("doctorProfile");
+            if (profile != null) {
+                String profileId = profile.getString("_id");
+                if (profileId != null) pageDoctorIds.add(profileId);
+                String profileUserId = profile.getString("userId");
+                if (profileUserId != null) pageDoctorIds.add(profileUserId);
+            }
+        }
 
-        // Batch count appointments for current month in ONE database query
-        YearMonth currentYearMonth = YearMonth.now();
-        String startOfMonth = currentYearMonth.atDay(1).toString();
-        String endOfMonth = currentYearMonth.atEndOfMonth().toString();
+        // 4. Batch count appointments (total & monthly) using MongoDB $match and $group
+        Map<String, Long> totalApptMap = new HashMap<>();
+        Map<String, Long> monthlyApptMap = new HashMap<>();
 
-        Query monthApptQuery = Query.query(Criteria.where("doctorId").in(doctorIds)
-                .and("appointmentDate").gte(startOfMonth).lte(endOfMonth));
-        List<Appointment> monthlyAppts = mongoTemplate.find(monthApptQuery, Appointment.class);
+        if (!pageDoctorIds.isEmpty()) {
+            YearMonth currentYearMonth = YearMonth.now();
+            String startOfMonth = currentYearMonth.atDay(1).toString();
+            String endOfMonth = currentYearMonth.atEndOfMonth().toString();
 
-        Map<String, Long> monthlyCountMap = monthlyAppts.stream()
-                .collect(Collectors.groupingBy(Appointment::getDoctorId, Collectors.counting()));
+            AggregationOperation apptMatch = context -> new Document("$match",
+                    new Document("doctorId", new Document("$in", pageDoctorIds))
+            );
 
-        // Total appointments count grouped by doctor
-        Query totalApptQuery = Query.query(Criteria.where("doctorId").in(doctorIds));
-        List<Appointment> allAppts = mongoTemplate.find(totalApptQuery, Appointment.class);
-        Map<String, Long> totalApptMap = allAppts.stream()
-                .collect(Collectors.groupingBy(Appointment::getDoctorId, Collectors.counting()));
+            AggregationOperation apptGroup = context -> new Document("$group",
+                    new Document("_id", "$doctorId")
+                            .append("totalCount", new Document("$sum", 1))
+                            .append("monthlyCount", new Document("$sum",
+                                    new Document("$cond", List.of(
+                                            new Document("$and", List.of(
+                                                    new Document("$gte", List.of("$appointmentDate", startOfMonth)),
+                                                    new Document("$lte", List.of("$appointmentDate", endOfMonth))
+                                            )),
+                                            1,
+                                            0
+                                    ))
+                            ))
+            );
 
-        List<SearchDoctorResponse> responseList = doctorUsers.stream().map(u -> {
-            Doctor doc = profileMap.get(u.getId());
-            long monthlyCount = monthlyCountMap.getOrDefault(u.getId(), 0L);
-            long totalCountForDoc = totalApptMap.getOrDefault(u.getId(), 0L);
+            Aggregation apptAgg = Aggregation.newAggregation(apptMatch, apptGroup);
+            AggregationResults<Document> apptResults = mongoTemplate.aggregate(apptAgg, "appointments", Document.class);
+
+            for (Document countDoc : apptResults.getMappedResults()) {
+                String docId = countDoc.getString("_id");
+                Number total = (Number) countDoc.get("totalCount");
+                Number monthly = (Number) countDoc.get("monthlyCount");
+                if (docId != null) {
+                    totalApptMap.put(docId, total != null ? total.longValue() : 0L);
+                    monthlyApptMap.put(docId, monthly != null ? monthly.longValue() : 0L);
+                }
+            }
+        }
+
+        // 5. Build response items with canonical IDs and privacy protections
+        List<SearchDoctorResponse> responseList = doctorDocs.stream().map(doc -> {
+            String userId = doc.getString("_id");
+            Document profile = (Document) doc.get("doctorProfile");
+            String profileId = profile != null ? profile.getString("_id") : null;
+
+            // Canonical doctorId: prefer Doctor profile ID, fallback to User ID
+            String canonicalDoctorId = profileId != null ? profileId : userId;
+
+            // Sum appointments across canonical ID and legacy user ID without double counting
+            long totalCountForDoc = totalApptMap.getOrDefault(userId, 0L);
+            long monthlyCountForDoc = monthlyApptMap.getOrDefault(userId, 0L);
+            if (profileId != null && !profileId.equals(userId)) {
+                totalCountForDoc += totalApptMap.getOrDefault(profileId, 0L);
+                monthlyCountForDoc += monthlyApptMap.getOrDefault(profileId, 0L);
+            }
+
+            Double rating = 0.0;
+            Integer totalRatings = 0;
+            if (profile != null) {
+                if (profile.get("rating") instanceof Number) {
+                    rating = ((Number) profile.get("rating")).doubleValue();
+                }
+                if (profile.get("totalRatings") instanceof Number) {
+                    totalRatings = ((Number) profile.get("totalRatings")).intValue();
+                }
+            }
 
             return SearchDoctorResponse.builder()
-                    .doctorId(u.getId())
-                    .name(u.getFullName())
-                    .email(u.getEmail())
-                    .specialization(u.getSpecialization())
-                    .phoneNumber(u.getPhoneNumber())
-                    .avgRating(doc != null && doc.getRating() != null ? doc.getRating() : 0.0)
-                    .totalRatings(doc != null && doc.getTotalRatings() != null ? doc.getTotalRatings() : 0)
+                    .doctorId(canonicalDoctorId)
+                    .name(doc.getString("fullName"))
+                    .email(doc.getString("email"))
+                    .specialization(doc.getString("specialization"))
+                    .phoneNumber(null) // Protected: omit personal mobile in public directory
+                    .avgRating(rating)
+                    .totalRatings(totalRatings)
                     .totalAppointments((int) totalCountForDoc)
-                    .photoUrl(u.getPhotoUrl())
-                    .bio(u.getBio())
-                    .licenseNumber(u.getLicenseNumber())
-                    .appointmentsThisMonth(monthlyCount)
+                    .photoUrl(doc.getString("photoUrl"))
+                    .bio(doc.getString("bio"))
+                    .licenseNumber(null) // Protected: omit internal license identifier in public directory
+                    .appointmentsThisMonth(monthlyCountForDoc)
                     .build();
         }).collect(Collectors.toList());
 
@@ -184,7 +296,7 @@ public class SearchServiceImpl implements SearchService {
 
         // 1. Authorization: Patients cannot search the patient directory
         if (currentUser.getRole() == Role.PATIENT) {
-            log.warn("Security Alert: Patient user {} attempted to access patient directory search", currentUser.getEmail());
+            log.warn("Security Alert: Patient user id {} attempted to access patient directory search", currentUser.getId());
             throw new AccessDeniedException("Patients are not authorized to search the patient directory");
         }
 
@@ -195,9 +307,9 @@ public class SearchServiceImpl implements SearchService {
         if (currentUser.getRole() == Role.DOCTOR) {
             Set<String> doctorIds = resolveDoctorIdentifiers(currentUser.getId());
 
-            // Distinct patient IDs from doctor's appointments and prescriptions
+            // Active or completed clinical interactions establish relationship; cancelled appointments are excluded
             List<String> patientIdsFromAppointments = mongoTemplate.findDistinct(
-                    Query.query(Criteria.where("doctorId").in(doctorIds)),
+                    Query.query(Criteria.where("doctorId").in(doctorIds).and("status").ne("CANCELLED")),
                     "patientId",
                     Appointment.class,
                     String.class
@@ -548,6 +660,11 @@ public class SearchServiceImpl implements SearchService {
         }
 
         switch (lowerSort) {
+            case "rating":
+                return Sort.by(direction, "doctorProfile.rating").and(Sort.by(Sort.Direction.ASC, "fullName"));
+            case "experience":
+            case "appointments":
+                return Sort.by(direction, "doctorProfile.experienceYears").and(Sort.by(Sort.Direction.ASC, "fullName"));
             case "specialization":
                 return Sort.by(direction, "specialization").and(Sort.by(Sort.Direction.ASC, "_id"));
             case "name":

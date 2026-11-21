@@ -4,37 +4,39 @@
 - **Endpoint:** `GET /api/search/doctors`
 - **Access:** Public / Authenticated
 - **Query Parameters:**
-  - `searchTerm` (optional, string): Case-insensitive regex match against `fullName` or `email`.
+  - `searchTerm` (optional, string): Case-insensitive regex match against `fullName` or `specialization`.
   - `specialization` (optional, string): Exact or prefix match against doctor specialization.
   - `minRating` (optional, number): Lower bound for rating filter (`0.0` to `5.0`).
   - `limit` (optional, integer, default: `20`, max: `100`): Results per page.
   - `offset` (optional, integer, default: `0`): Pagination offset ($>= 0$).
-  - `sortBy` (optional, string, default: `fullName`): Allowed values: `fullName`, `specialization`, `rating`.
-  - `sortDir` (optional, string, default: `asc`): `asc` or `desc`.
+  - `sortBy` (optional, string, default: `fullName`): Allowed values: `name`, `specialization`, `rating`, `experience`, `appointments`.
+  - `sortOrder` (optional, string, default: `asc`): `asc` or `desc`.
 - **Response Format:**
 ```json
 {
   "data": [
     {
-      "id": "doc-uuid",
-      "userId": "user-uuid",
-      "fullName": "Dr. Sarah Connor",
+      "doctorId": "doc-profile-uuid",
+      "name": "Dr. Sarah Connor",
       "email": "sarah.connor@pulsecare.com",
       "specialization": "Cardiology",
-      "rating": 4.9,
-      "totalAppointments": 142,
-      "completedAppointments": 138,
-      "availableDays": ["Monday", "Wednesday", "Friday"],
-      "consultationFee": 150.0
+      "avgRating": 4.9,
+      "totalRatings": 142,
+      "totalAppointments": 138,
+      "appointmentsThisMonth": 24,
+      "photoUrl": "https://...",
+      "bio": "Cardiologist with 15 years experience..."
     }
   ],
   "totalCount": 1,
-  "pageNumber": 0,
-  "pageSize": 20,
+  "pageNumber": 1,
+  "limit": 20,
+  "offset": 0,
   "totalPages": 1,
   "hasMore": false
 }
 ```
+*Note: Sensitive staff fields (`phoneNumber`, `licenseNumber`) are omitted from public directory responses to protect doctor privacy.*
 
 ---
 
@@ -58,12 +60,14 @@
     }
   ],
   "totalCount": 1,
-  "pageNumber": 0,
-  "pageSize": 20,
+  "pageNumber": 1,
+  "limit": 20,
+  "offset": 0,
   "totalPages": 1,
   "hasMore": false
 }
 ```
+*Clinical Restriction: Doctors are restricted to searching only patients with an active or completed clinical relationship (`status != "CANCELLED"`).*
 
 ---
 
@@ -77,12 +81,12 @@
   "patientId": "optional-patient-id",
   "startDate": "2026-01-01",
   "endDate": "2026-12-31",
-  "status": "COMPLETED",
+  "status": "CONFIRMED",
   "reason": "Routine Checkup",
   "limit": 20,
   "offset": 0,
-  "sortBy": "appointmentDate",
-  "sortDir": "desc"
+  "sortBy": "date",
+  "sortOrder": "desc"
 }
 ```
 - **Response Format:**
@@ -94,15 +98,17 @@
       "doctorName": "Dr. Sarah Connor",
       "patientName": "John Doe",
       "appointmentDate": "2026-11-20",
-      "timeSlot": "10:00 AM",
-      "status": "COMPLETED",
+      "appointmentTime": "10:00 AM",
+      "status": "CONFIRMED",
       "reason": "Routine Checkup",
-      "fee": 150.0
+      "doctorId": "doc-profile-uuid",
+      "patientId": "patient-uuid"
     }
   ],
   "totalCount": 1,
-  "pageNumber": 0,
-  "pageSize": 20,
+  "pageNumber": 1,
+  "limit": 20,
+  "offset": 0,
   "totalPages": 1,
   "hasMore": false
 }
@@ -124,8 +130,8 @@
   "status": "ACTIVE",
   "limit": 20,
   "offset": 0,
-  "sortBy": "createdAt",
-  "sortDir": "desc"
+  "sortBy": "date",
+  "sortOrder": "desc"
 }
 ```
 - **Response Format:**
@@ -136,15 +142,18 @@
       "prescriptionId": "presc-uuid",
       "doctorName": "Dr. Sarah Connor",
       "patientName": "John Doe",
-      "medicines": ["Amoxicillin 500mg", "Paracetamol"],
-      "diagnosis": "Bacterial Infection",
+      "medicines": "Amoxicillin 500mg, Paracetamol",
+      "dosageInstructions": "1 tablet twice daily after meals",
       "status": "ACTIVE",
-      "createdAt": "2026-11-20T10:00:00"
+      "createdDate": "2026-11-20T10:00:00",
+      "doctorId": "doc-profile-uuid",
+      "patientId": "patient-uuid"
     }
   ],
   "totalCount": 1,
-  "pageNumber": 0,
-  "pageSize": 20,
+  "pageNumber": 1,
+  "limit": 20,
+  "offset": 0,
   "totalPages": 1,
   "hasMore": false
 }
