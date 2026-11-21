@@ -39,6 +39,12 @@ public class AppointmentServiceTest {
     @Mock
     private UserRepository userRepository;
 
+    @Mock
+    private AppointmentSlotReservationRepository slotReservationRepository;
+
+    @Mock
+    private org.springframework.data.mongodb.core.MongoTemplate mongoTemplate;
+
     @InjectMocks
     private AppointmentServiceImpl appointmentService;
 
@@ -132,5 +138,141 @@ public class AppointmentServiceTest {
         assertNotNull(results);
         assertEquals(1, results.size());
         assertEquals("appt-doc-1", results.get(0).getId());
+    }
+
+    @Test
+    public void createAppointment_WhenSlotAlreadyReserved_ThrowsConflictException() {
+        String docId = "doc-100";
+        Doctor doctor = Doctor.builder().id(docId).fullName("Dr. Smith").build();
+        when(doctorRepository.findById(docId)).thenReturn(Optional.of(doctor));
+        when(patientRepository.findById("patient-1")).thenReturn(Optional.of(Patient.builder().id("patient-1").build()));
+
+        com.hospital.backend.dto.AvailableSlotsResponse slots = com.hospital.backend.dto.AvailableSlotsResponse.builder()
+                .scheduleConfigured(true)
+                .available(true)
+                .availableSlots(List.of("10:00 AM"))
+                .build();
+        when(availabilityService.getAvailableSlots(docId, "2026-07-01")).thenReturn(slots);
+
+        when(slotReservationRepository.insert(org.mockito.ArgumentMatchers.any(com.hospital.backend.model.AppointmentSlotReservation.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("Duplicate slot key"));
+
+        com.hospital.backend.dto.AppointmentRequest request = new com.hospital.backend.dto.AppointmentRequest();
+        request.setDoctorId(docId);
+        request.setPatientId("patient-1");
+        request.setAppointmentDate("2026-07-01");
+        request.setAppointmentTime("10:00 AM");
+        request.setReason("Checkup");
+
+        com.hospital.backend.exception.AppointmentSlotConflictException ex = assertThrows(
+                com.hospital.backend.exception.AppointmentSlotConflictException.class,
+                () -> appointmentService.createAppointment(request)
+        );
+
+        assertEquals("APPOINTMENT_SLOT_CONFLICT", ex.getErrorCode());
+        assertTrue(ex.getMessage().contains("no longer available"));
+    }
+
+    @Test
+    public void createAppointment_Success_GeneratesAtomicTokenAndSlotReservation() {
+        String docId = "doc-100";
+        Doctor doctor = Doctor.builder().id(docId).fullName("Dr. Smith").build();
+        when(doctorRepository.findById(docId)).thenReturn(Optional.of(doctor));
+        when(patientRepository.findById("patient-1")).thenReturn(Optional.of(Patient.builder().id("patient-1").build()));
+
+        com.hospital.backend.dto.AvailableSlotsResponse slots = com.hospital.backend.dto.AvailableSlotsResponse.builder()
+                .scheduleConfigured(true)
+                .available(true)
+                .availableSlots(List.of("10:00 AM"))
+                .build();
+        when(availabilityService.getAvailableSlots(docId, "2026-07-01")).thenReturn(slots);
+
+        com.hospital.backend.model.DailyQueueCounter counter = com.hospital.backend.model.DailyQueueCounter.builder()
+                .id(docId + "_2026-07-01")
+                .seq(5L)
+                .build();
+        when(mongoTemplate.findAndModify(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(com.hospital.backend.model.DailyQueueCounter.class)
+        )).thenReturn(counter);
+
+        when(appointmentRepository.save(org.mockito.ArgumentMatchers.any(Appointment.class)))
+                .thenAnswer(inv -> {
+                    Appointment a = inv.getArgument(0);
+                    a.setId("appt-new-123");
+                    return a;
+                });
+
+        com.hospital.backend.dto.AppointmentRequest request = new com.hospital.backend.dto.AppointmentRequest();
+        request.setDoctorId(docId);
+        request.setPatientId("patient-1");
+        request.setAppointmentDate("2026-07-01");
+        request.setAppointmentTime("10:00 AM");
+        request.setReason("Checkup");
+
+        Appointment created = appointmentService.createAppointment(request);
+
+        assertNotNull(created);
+        assertEquals("appt-new-123", created.getId());
+        assertEquals(5, created.getTokenNumber());
+        assertEquals("PENDING", created.getStatus());
+    }
+
+    @Test
+    public void updateAppointmentStatus_WhenCancelledAppointmentModified_ThrowsInvalidTransition() {
+        Appointment cancelledAppt = Appointment.builder()
+                .id("a-cancel")
+                .status("CANCELLED")
+                .doctorId("d1")
+                .appointmentDate("2026-08-01")
+                .appointmentTime("09:00 AM")
+                .build();
+
+        when(appointmentRepository.findById("a-cancel")).thenReturn(Optional.of(cancelledAppt));
+
+        assertThrows(
+                com.hospital.backend.exception.InvalidBookingTransitionException.class,
+                () -> appointmentService.updateAppointmentStatus("a-cancel", "CONFIRMED")
+        );
+    }
+
+    @Test
+    public void updateAppointmentStatus_WhenRepeatedCancellation_ReturnsIdempotently() {
+        Appointment cancelledAppt = Appointment.builder()
+                .id("a-cancel-2")
+                .status("CANCELLED")
+                .doctorId("d1")
+                .appointmentDate("2026-08-01")
+                .appointmentTime("09:00 AM")
+                .build();
+
+        when(appointmentRepository.findById("a-cancel-2")).thenReturn(Optional.of(cancelledAppt));
+
+        Appointment result = appointmentService.updateAppointmentStatus("a-cancel-2", "CANCELLED");
+
+        assertNotNull(result);
+        assertEquals("CANCELLED", result.getStatus());
+    }
+
+    @Test
+    public void updateAppointmentStatus_WhenCancelled_ReleasesSlotReservation() {
+        Appointment pendingAppt = Appointment.builder()
+                .id("a-pending")
+                .status("PENDING")
+                .doctorId("doc-1")
+                .appointmentDate("2026-08-01")
+                .appointmentTime("09:00 AM")
+                .build();
+
+        when(appointmentRepository.findById("a-pending")).thenReturn(Optional.of(pendingAppt));
+        when(appointmentRepository.save(org.mockito.ArgumentMatchers.any(Appointment.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        Appointment result = appointmentService.updateAppointmentStatus("a-pending", "CANCELLED");
+
+        assertEquals("CANCELLED", result.getStatus());
+        org.mockito.Mockito.verify(slotReservationRepository).deleteByAppointmentId("a-pending");
     }
 }

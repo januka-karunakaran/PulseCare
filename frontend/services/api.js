@@ -122,5 +122,11 @@ export async function apiFetch(endpoint, options = {}, retry = true) {
       ? errorData
       : errorData?.message || errorData?.error;
 
-  throw new Error(errorMessage || `Request failed (${response.status})`);
+  const err = new Error(errorMessage || `Request failed (${response.status})`);
+  err.status = response.status;
+  if (typeof errorData === "object" && errorData !== null) {
+    err.code = errorData.code;
+    err.data = errorData;
+  }
+  throw err;
 }

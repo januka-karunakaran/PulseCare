@@ -76,6 +76,48 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.FORBIDDEN);
     }
 
+    @ExceptionHandler(AppointmentSlotConflictException.class)
+    public ResponseEntity<ErrorResponse> handleSlotConflict(AppointmentSlotConflictException ex) {
+        log.warn("Appointment slot conflict: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(BedAlreadyOccupiedException.class)
+    public ResponseEntity<ErrorResponse> handleBedConflict(BedAlreadyOccupiedException ex) {
+        log.warn("Bed allocation conflict: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(InvalidBookingTransitionException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidTransition(InvalidBookingTransitionException ex) {
+        log.warn("Invalid booking state transition: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(DuplicateResourceException.class)
     public ResponseEntity<ErrorResponse> handleDuplicate(DuplicateResourceException ex) {
         log.warn("Duplicate resource: {}", ex.getMessage());

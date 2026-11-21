@@ -2,13 +2,14 @@ package com.hospital.backend.service.impl;
 
 import com.hospital.backend.dto.AppointmentRequest;
 import com.hospital.backend.dto.AvailableSlotsResponse;
-import com.hospital.backend.exception.BadRequestException;
-import com.hospital.backend.model.Appointment;
-import com.hospital.backend.model.Doctor;
-import com.hospital.backend.model.Patient;
-import com.hospital.backend.model.User;
 import com.hospital.backend.enums.Role;
+import com.hospital.backend.exception.AppointmentSlotConflictException;
+import com.hospital.backend.exception.BadRequestException;
+import com.hospital.backend.exception.InvalidBookingTransitionException;
+import com.hospital.backend.exception.ResourceNotFoundException;
+import com.hospital.backend.model.*;
 import com.hospital.backend.repository.AppointmentRepository;
+import com.hospital.backend.repository.AppointmentSlotReservationRepository;
 import com.hospital.backend.repository.DoctorRepository;
 import com.hospital.backend.repository.PatientRepository;
 import com.hospital.backend.repository.UserRepository;
@@ -16,27 +17,46 @@ import com.hospital.backend.service.AppointmentService;
 import com.hospital.backend.service.AvailabilityService;
 import com.hospital.backend.service.NotificationService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 
+/**
+ * Enterprise Appointment Service implementation with database-enforced atomic concurrency controls.
+ * Eliminates double-booking of doctor slots and duplicate daily queue tokens across distributed instances.
+ */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AppointmentServiceImpl implements AppointmentService {
 
     private final AppointmentRepository appointmentRepository;
+    private final AppointmentSlotReservationRepository slotReservationRepository;
     private final DoctorRepository doctorRepository;
     private final PatientRepository patientRepository;
     private final NotificationService notificationService;
     private final AvailabilityService availabilityService;
     private final UserRepository userRepository;
+    private final MongoTemplate mongoTemplate;
 
     @Override
-    public synchronized Appointment createAppointment(AppointmentRequest request) {
+    public Appointment createAppointment(AppointmentRequest request) {
+        // 1. Resolve canonical Doctor profile identifier
         Doctor selectedDoctor = doctorRepository.findById(request.getDoctorId())
                 .or(() -> doctorRepository.findByUserId(request.getDoctorId()))
-                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Doctor not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Doctor not found"));
+        String canonicalDoctorId = selectedDoctor.getId();
 
+        // 2. Resolve or create patient profile
         patientRepository.findById(request.getPatientId()).orElseGet(() -> {
             User patientUser = userRepository.findById(request.getPatientId())
                     .filter(user -> user.getRole() == Role.PATIENT)
@@ -52,8 +72,14 @@ public class AppointmentServiceImpl implements AppointmentService {
             return patientRepository.save(patient);
         });
 
+        // 3. Normalize slot identity parameters
+        String normalizedDate = request.getAppointmentDate().trim();
+        String normalizedTime = request.getAppointmentTime().trim().toUpperCase(Locale.ROOT);
+        String slotKey = canonicalDoctorId + "_" + normalizedDate + "_" + normalizedTime;
+
+        // 4. Verify schedule availability configured
         AvailableSlotsResponse slotAvailability = availabilityService.getAvailableSlots(
-                request.getDoctorId(), request.getAppointmentDate());
+                canonicalDoctorId, normalizedDate);
         if (!slotAvailability.isScheduleConfigured()) {
             throw new BadRequestException("This doctor has not configured a schedule for the selected date");
         }
@@ -63,30 +89,74 @@ public class AppointmentServiceImpl implements AppointmentService {
                     : "Doctor is unavailable on the selected date");
         }
         if (!slotAvailability.getAvailableSlots().contains(request.getAppointmentTime())) {
-            throw new BadRequestException("The selected time slot is no longer available");
+            throw new AppointmentSlotConflictException("This slot is no longer available. Please select another time.");
         }
 
-        List<Appointment> appointmentsForDay = appointmentRepository
-                .findByDoctorIdAndAppointmentDate(request.getDoctorId(), request.getAppointmentDate());
-        int nextTokenNumber = appointmentsForDay.stream()
-                .map(Appointment::getTokenNumber)
-                .filter(token -> token != null)
-                .max(Integer::compareTo)
-                .orElse(0) + 1;
-
-        Appointment appointment = Appointment.builder()
-                .doctorId(request.getDoctorId())
+        // 5. Database-enforced atomic slot reservation
+        AppointmentSlotReservation reservation = AppointmentSlotReservation.builder()
+                .id(slotKey)
+                .doctorId(canonicalDoctorId)
+                .appointmentDate(normalizedDate)
+                .appointmentTime(normalizedTime)
                 .patientId(request.getPatientId())
-                .appointmentDate(request.getAppointmentDate())
-                .appointmentTime(request.getAppointmentTime())
+                .status("RESERVED")
+                .createdAt(Instant.now())
+                .build();
+
+        try {
+            slotReservationRepository.insert(reservation);
+        } catch (DuplicateKeyException ex) {
+            log.warn("Slot conflict: Doctor {} slot on {} at {} already reserved", canonicalDoctorId, normalizedDate, normalizedTime);
+            throw new AppointmentSlotConflictException("This slot is no longer available. Please select another time.");
+        }
+
+        // 6. Database-enforced atomic daily queue counter generation
+        int nextTokenNumber;
+        try {
+            String counterKey = canonicalDoctorId + "_" + normalizedDate;
+            Query counterQuery = Query.query(Criteria.where("_id").is(counterKey));
+            Update counterUpdate = new Update()
+                    .inc("seq", 1)
+                    .setOnInsert("doctorId", canonicalDoctorId)
+                    .setOnInsert("date", normalizedDate)
+                    .set("updatedAt", Instant.now());
+            FindAndModifyOptions options = FindAndModifyOptions.options().returnNew(true).upsert(true);
+            DailyQueueCounter counter = mongoTemplate.findAndModify(counterQuery, counterUpdate, options, DailyQueueCounter.class);
+            nextTokenNumber = (counter != null && counter.getSeq() != null) ? counter.getSeq().intValue() : 1;
+        } catch (Exception ex) {
+            log.error("Failed to generate atomic queue token for doctor {} on {}. Rolling back slot reservation.", canonicalDoctorId, normalizedDate, ex);
+            slotReservationRepository.deleteById(slotKey);
+            throw ex;
+        }
+
+        // 7. Persist Appointment and link to slot reservation
+        Appointment appointment = Appointment.builder()
+                .doctorId(canonicalDoctorId)
+                .patientId(request.getPatientId())
+                .appointmentDate(normalizedDate)
+                .appointmentTime(request.getAppointmentTime().trim())
                 .tokenNumber(nextTokenNumber)
                 .reason(request.getReason())
                 .status("PENDING")
                 .build();
 
-        Appointment savedAppointment = appointmentRepository.save(appointment);
+        Appointment savedAppointment;
+        try {
+            savedAppointment = appointmentRepository.save(appointment);
 
-        // Send notifications to both doctor and patient
+            // Link reservation with actual appointment ID
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(slotKey)),
+                    new Update().set("appointmentId", savedAppointment.getId()),
+                    AppointmentSlotReservation.class
+            );
+        } catch (Exception ex) {
+            log.error("Failed to persist appointment. Rolling back slot reservation for slotKey {}", slotKey, ex);
+            slotReservationRepository.deleteById(slotKey);
+            throw ex;
+        }
+
+        // 8. Notifications (non-blocking for appointment persistence)
         try {
             notificationService.notifyAppointmentCreated(
                     savedAppointment.getId(),
@@ -95,8 +165,7 @@ public class AppointmentServiceImpl implements AppointmentService {
                     savedAppointment.getAppointmentDate() + " " + savedAppointment.getAppointmentTime()
             );
         } catch (Exception e) {
-            // Log but don't fail appointment creation if notification fails
-            System.err.println("Failed to send appointment notification: " + e.getMessage());
+            log.warn("Failed to send appointment notification: {}", e.getMessage());
         }
 
         return savedAppointment;
@@ -110,7 +179,7 @@ public class AppointmentServiceImpl implements AppointmentService {
     @Override
     public Appointment getAppointmentById(String id) {
         return appointmentRepository.findById(id)
-                .orElseThrow(() -> new com.hospital.backend.exception.ResourceNotFoundException("Appointment not found: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Appointment not found: " + id));
     }
 
     @Override
@@ -165,30 +234,46 @@ public class AppointmentServiceImpl implements AppointmentService {
 
     @Override
     public Appointment updateAppointmentStatus(String id, String status) {
+        if (status == null || status.isBlank()) {
+            throw new BadRequestException("Status cannot be empty");
+        }
         Appointment appointment = getAppointmentById(id);
-        String previousStatus = appointment.getStatus();
-        appointment.setStatus(status);
+        String currentStatus = appointment.getStatus() != null ? appointment.getStatus().trim().toUpperCase(Locale.ROOT) : "PENDING";
+        String targetStatus = status.trim().toUpperCase(Locale.ROOT);
+
+        // 1. Idempotency: If status is already targetStatus, return safely
+        if (currentStatus.equals(targetStatus)) {
+            return appointment;
+        }
+
+        // 2. Validate state transitions
+        validateStateTransition(currentStatus, targetStatus);
+
+        appointment.setStatus(targetStatus);
         Appointment updatedAppointment = appointmentRepository.save(appointment);
 
-        // Send notification when status changes
-        if (!previousStatus.equals(status)) {
-            try {
-                if ("CANCELLED".equalsIgnoreCase(status)) {
-                    notificationService.notifyAppointmentCancelled(
-                            appointment.getId(),
-                            appointment.getPatientId(),
-                            appointment.getDoctorId()
-                    );
-                } else if ("COMPLETED".equalsIgnoreCase(status)) {
-                    notificationService.notifyAppointmentUpdated(
-                            appointment.getId(),
-                            appointment.getPatientId(),
-                            appointment.getDoctorId()
-                    );
-                }
-            } catch (Exception e) {
-                System.err.println("Failed to send status update notification: " + e.getMessage());
+        // 3. Slot reservation lifecycle: release reservation on cancellation or rejection
+        if ("CANCELLED".equals(targetStatus) || "REJECTED".equals(targetStatus)) {
+            releaseSlotReservation(appointment);
+        }
+
+        // 4. Send notification on valid status change
+        try {
+            if ("CANCELLED".equals(targetStatus)) {
+                notificationService.notifyAppointmentCancelled(
+                        appointment.getId(),
+                        appointment.getPatientId(),
+                        appointment.getDoctorId()
+                );
+            } else if ("COMPLETED".equals(targetStatus)) {
+                notificationService.notifyAppointmentUpdated(
+                        appointment.getId(),
+                        appointment.getPatientId(),
+                        appointment.getDoctorId()
+                );
             }
+        } catch (Exception e) {
+            log.warn("Failed to send status update notification: {}", e.getMessage());
         }
 
         return updatedAppointment;
@@ -196,6 +281,58 @@ public class AppointmentServiceImpl implements AppointmentService {
 
     @Override
     public void deleteAppointment(String id) {
+        Appointment appointment = getAppointmentById(id);
+        releaseSlotReservation(appointment);
         appointmentRepository.deleteById(id);
+    }
+
+    private void validateStateTransition(String currentStatus, String targetStatus) {
+        if ("CANCELLED".equals(currentStatus)) {
+            throw new InvalidBookingTransitionException("Cannot modify status of a cancelled appointment");
+        }
+        if ("COMPLETED".equals(currentStatus)) {
+            throw new InvalidBookingTransitionException("Cannot modify status of a completed appointment");
+        }
+        if ("REJECTED".equals(currentStatus)) {
+            throw new InvalidBookingTransitionException("Cannot modify status of a rejected appointment");
+        }
+
+        switch (currentStatus) {
+            case "PENDING":
+                if (!"CONFIRMED".equals(targetStatus) && !"APPROVED".equals(targetStatus)
+                        && !"REJECTED".equals(targetStatus) && !"CANCELLED".equals(targetStatus)) {
+                    throw new InvalidBookingTransitionException("Cannot transition appointment from PENDING to " + targetStatus);
+                }
+                break;
+            case "CONFIRMED":
+            case "APPROVED":
+            case "SCHEDULED":
+                if (!"COMPLETED".equals(targetStatus) && !"CANCELLED".equals(targetStatus) && !"NO_SHOW".equals(targetStatus)) {
+                    throw new InvalidBookingTransitionException("Cannot transition appointment from " + currentStatus + " to " + targetStatus);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void releaseSlotReservation(Appointment appointment) {
+        if (appointment == null) return;
+        try {
+            // Delete reservation specifically bound to this appointment ID
+            slotReservationRepository.deleteByAppointmentId(appointment.getId());
+
+            // Also delete by compound key if matching appointmentId
+            if (appointment.getDoctorId() != null && appointment.getAppointmentDate() != null && appointment.getAppointmentTime() != null) {
+                String slotKey = appointment.getDoctorId() + "_" + appointment.getAppointmentDate().trim() + "_" + appointment.getAppointmentTime().trim().toUpperCase(Locale.ROOT);
+                mongoTemplate.remove(
+                        Query.query(Criteria.where("_id").is(slotKey).and("appointmentId").is(appointment.getId())),
+                        AppointmentSlotReservation.class
+                );
+            }
+            log.info("Released slot reservation for appointment {}", appointment.getId());
+        } catch (Exception ex) {
+            log.error("Error releasing slot reservation for appointment {}", appointment.getId(), ex);
+        }
     }
 }

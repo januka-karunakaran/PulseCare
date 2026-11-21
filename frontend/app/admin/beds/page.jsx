@@ -19,6 +19,7 @@ export default function BedManagementPage() {
   const [patients, setPatients] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -102,7 +103,10 @@ export default function BedManagementPage() {
       setError("Please select a patient and a doctor.");
       return;
     }
+    if (submitting) return;
+
     try {
+      setSubmitting(true);
       setError("");
       setSuccess("");
       await apiFetch("/beds/book", {
@@ -119,7 +123,16 @@ export default function BedManagementPage() {
       setAllocationForm({ patientId: "", doctorId: "", notes: "" });
       loadData();
     } catch (err) {
-      setError(err.message || "Failed to allocate bed.");
+      const isBedConflict = err.status === 409 || err.code === "BED_ALREADY_OCCUPIED" || (err.message && (err.message.toLowerCase().includes("allocated") || err.message.toLowerCase().includes("occupied")));
+      if (isBedConflict) {
+        setError("This bed has already been allocated. Please select another bed.");
+      } else {
+        setError(err.message || "Failed to allocate bed.");
+      }
+      setShowAllocateModal(false);
+      loadData();
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -572,14 +585,16 @@ export default function BedManagementPage() {
                           setAllocationForm({ patientId: "", doctorId: "", notes: "" });
                         }}
                         className="btn btn-secondary"
+                        disabled={submitting}
                       >
                         Cancel
                       </button>
                       <button 
                         type="submit" 
                         className="btn btn-primary"
+                        disabled={submitting}
                       >
-                        Allocate Unit
+                        {submitting ? "Allocating..." : "Allocate Unit"}
                       </button>
                     </div>
                   </form>

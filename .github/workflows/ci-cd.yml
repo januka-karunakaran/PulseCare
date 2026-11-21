@@ -42,7 +42,7 @@ jobs:
         run: chmod +x mvnw
 
       - name: Run backend tests
-        run: ./mvnw -B test
+        run: ./mvnw -B test || mvn -B test
         env:
           MAIL_ENABLED: 'false'
           JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
