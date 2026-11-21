@@ -19,6 +19,11 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
     defaults:
       run:
         working-directory: backend
@@ -41,6 +46,7 @@ jobs:
         env:
           MAIL_ENABLED: 'false'
           JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
+          DOCKER_API_VERSION: '1.44'
 
   frontend:
     name: Frontend checks

@@ -21,6 +21,12 @@ jobs:
     name: Backend Build & Test (Java 17 / Spring Boot)
     runs-on: ubuntu-latest
 
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -41,6 +47,7 @@ jobs:
         env:
           MAIL_ENABLED: 'false'
           JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
+          DOCKER_API_VERSION: '1.44'
 
       - name: Build Production JAR
         working-directory: ./backend
