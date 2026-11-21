@@ -61,4 +61,14 @@ public class ApiResponse<T> {
                 .timestamp(Instant.now())
                 .build();
     }
+
+    public static <T> ApiResponse<T> error(String message, int statusCode, T data) {
+        return ApiResponse.<T>builder()
+                .success(false)
+                .message(message)
+                .data(data)
+                .statusCode(statusCode)
+                .timestamp(Instant.now())
+                .build();
+    }
 }

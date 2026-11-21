@@ -1,18 +1,16 @@
 # ========================================================
 # Build Stage: Maven Build with Temurin JDK 17
 # ========================================================
-FROM maven:3.9.14-eclipse-temurin-17 AS build
+FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /workspace
 
 # Cache dependency layer
-COPY pom.xml mvnw ./
-COPY .mvn .mvn
-RUN chmod +x mvnw
-RUN ./mvnw -B dependency:go-offline
+COPY pom.xml ./
+RUN mvn -B dependency:go-offline
 
 # Compile and package application
 COPY src src
-RUN ./mvnw -B package -DskipTests
+RUN mvn -B package -DskipTests
 
 # ========================================================
 # Runtime Stage: Hardened, Least-Privilege JRE 17
@@ -28,7 +26,7 @@ RUN apt-get update && \
     useradd -r -u 10001 -g hms -s /sbin/nologin -d /app hms
 
 # Copy compiled artifact with non-root ownership
-COPY --from=build --chown=hms:hms /workspace/target/backend-0.0.1-SNAPSHOT.jar app.jar
+COPY --from=build --chown=hms:hms /workspace/target/*.jar app.jar
 
 # Enforce least-privilege non-root execution
 USER hms:hms

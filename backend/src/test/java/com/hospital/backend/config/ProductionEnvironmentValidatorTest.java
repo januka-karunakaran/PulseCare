@@ -47,9 +47,16 @@ public class ProductionEnvironmentValidatorTest {
 
     @Test
     public void shortJwtSecret_ThrowsIllegalStateException() {
-        validator.setJwtSecret("short-key");
+        validator.setJwtSecret("short-key-12345");
         IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateConfiguration());
         assertTrue(ex.getMessage().contains("insufficient"));
+    }
+
+    @Test
+    public void repeatingLowEntropySecret_ThrowsIllegalStateException() {
+        validator.setJwtSecret("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> validator.validateConfiguration());
+        assertTrue(ex.getMessage().contains("cryptographic randomness"));
     }
 
     @Test

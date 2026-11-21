@@ -61,7 +61,7 @@ public class HealthController {
                     "timestamp", Instant.now().toString()
             );
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                    .body(ApiResponse.error("Service dependencies not ready", status));
+                    .body(ApiResponse.error("Service dependencies not ready", HttpStatus.SERVICE_UNAVAILABLE.value(), status));
         }
     }
 }

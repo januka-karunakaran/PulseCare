@@ -1,6 +1,5 @@
 # Backend .dockerignore
 target/
-.mvn/wrapper/maven-wrapper.jar
 .git
 .gitignore
 *.md

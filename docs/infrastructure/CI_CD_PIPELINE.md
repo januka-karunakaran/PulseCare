@@ -1,7 +1,7 @@
 # Continuous Integration & Delivery (CI/CD) Pipeline
 
 ## Overview
-PulseCare 2.0 employs GitHub Actions workflows to enforce automated security, code quality, testing, container validation, and deployment gates.
+PulseCare 2.0 employs hardened GitHub Actions workflows to enforce automated security, code quality, testing, container validation, and deployment gates.
 
 ---
 
@@ -29,9 +29,12 @@ PulseCare maintains two primary workflows:
      - Compiles Next.js bundle: `npm run build`.
   3. `container-build-validation`:
      - Depends on `backend-build-test` and `frontend-build-test`.
-     - Validates compose schemas: `docker compose config --quiet` and `docker compose -f docker-compose.prod.yml config --quiet`.
-     - Verifies backend multi-stage Docker build: `docker build ./backend`.
-     - Verifies frontend multi-stage Docker build: `docker build ./frontend`.
+     - Validates local compose: `docker compose config --quiet`.
+     - Verifies fail-closed rejection on missing production compose secrets.
+     - Validates production compose schema with synthetic test secrets.
+     - Verifies MongoDB host port is unexposed in production compose.
+     - Validates backend multi-stage Docker build: `docker build ./backend`.
+     - Validates frontend multi-stage Docker build: `docker build ./frontend`.
 
 ### 1.2 Production Release & Registry Delivery (`.github/workflows/ci-cd.yml`)
 - **Triggers:**
@@ -52,9 +55,9 @@ PulseCare maintains two primary workflows:
 
 | Gate | Description | Action on Failure |
 | :--- | :--- | :--- |
-| **Backend Test Suite** | 38+ Unit & Integration Tests | Blocks merge, halts pipeline immediately |
+| **Backend Test Suite** | 47 Unit, Slice & Integration Tests | Blocks merge, halts pipeline immediately |
 | **Frontend Lint** | ESLint compliance | Blocks merge, halts pipeline immediately |
 | **Frontend Build** | Next.js compilation & TypeScript validation | Blocks merge, halts pipeline immediately |
-| **Compose Schema** | Docker compose syntax & configuration | Blocks merge, halts pipeline immediately |
+| **Compose Schema** | Docker compose syntax & fail-closed secret checks | Blocks merge, halts pipeline immediately |
 | **Container Build** | Multi-stage Dockerfile build validation | Blocks merge, halts pipeline immediately |
 | **Test Isolation** | Dynamic Testcontainers verification | Fails closed if container cannot start |

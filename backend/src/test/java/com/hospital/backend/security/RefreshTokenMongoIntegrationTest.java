@@ -45,6 +45,15 @@ public class RefreshTokenMongoIntegrationTest {
     @Container
     private static final MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
 
+    static {
+        try {
+            if (DockerClientFactory.instance().isDockerAvailable()) {
+                mongoDBContainer.start();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     @DynamicPropertySource
     static void setMongoProperties(DynamicPropertyRegistry registry) {
         if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
@@ -59,9 +68,19 @@ public class RefreshTokenMongoIntegrationTest {
 
     @BeforeAll
     public static void verifyDockerAvailable() {
-        if (!DockerClientFactory.instance().isDockerAvailable()) {
+        if (!DockerClientFactory.instance().isDockerAvailable() || !mongoDBContainer.isRunning()) {
             throw new IllegalStateException("FAIL-CLOSED TEST ISOLATION: Docker is required for RefreshTokenMongoIntegrationTest "
                     + "to run safely inside an isolated Testcontainers disposable database. Local shared database fallback is strictly prohibited.");
+        }
+    }
+
+    @AfterAll
+    public static void stopContainer() {
+        if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
+            try {
+                mongoDBContainer.stop();
+            } catch (Exception ignored) {
+            }
         }
     }
 
