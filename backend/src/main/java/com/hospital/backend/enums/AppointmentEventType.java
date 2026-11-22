@@ -1,0 +1,10 @@
+package com.hospital.backend.enums;
+
+public enum AppointmentEventType {
+    APPOINTMENT_CREATED,
+    APPOINTMENT_CONFIRMED,
+    APPOINTMENT_CANCELLED,
+    APPOINTMENT_RESCHEDULED,
+    APPOINTMENT_STATUS_CHANGED,
+    APPOINTMENT_REMINDER_DUE
+}

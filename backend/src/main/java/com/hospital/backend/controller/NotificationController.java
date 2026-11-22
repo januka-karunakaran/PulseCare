@@ -96,12 +96,16 @@ public class NotificationController {
     }
 
     /**
-     * Delete specific notification
+     * Delete specific notification (enforces record ownership)
      */
     @DeleteMapping("/{notificationId}")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, String>> deleteNotification(@PathVariable String notificationId) {
-        notificationService.deleteNotification(notificationId);
+    public ResponseEntity<Map<String, String>> deleteNotification(
+            @PathVariable String notificationId,
+            Authentication authentication
+    ) {
+        String currentUserId = userService.getUserIdByEmail(authentication.getName());
+        notificationService.deleteNotification(notificationId, currentUserId);
         Map<String, String> response = new HashMap<>();
         response.put("message", "Notification deleted");
         return ResponseEntity.ok(response);

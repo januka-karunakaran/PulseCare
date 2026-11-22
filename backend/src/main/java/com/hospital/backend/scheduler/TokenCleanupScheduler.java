@@ -11,6 +11,7 @@ import java.time.Instant;
 
 /**
  * Enterprise Scheduled Task: Purges expired security tokens nightly.
+ * Fully idempotent, safe against concurrent runs, and avoids database-wide scans via indexed deletion.
  */
 @Slf4j
 @Component
@@ -21,14 +22,17 @@ public class TokenCleanupScheduler {
     private final PasswordResetTokenRepository passwordResetTokenRepository;
 
     /**
-     * Runs every midnight (00:00:00) to purge expired refresh tokens and password reset tokens.
+     * Runs nightly at 00:00:00 (or configured cron) to purge expired tokens.
      */
-    @Scheduled(cron = "0 0 0 * * ?")
+    @Scheduled(cron = "${app.scheduling.token-cleanup-cron:0 0 0 * * ?}")
     public void cleanupExpiredTokens() {
-        log.info("Starting scheduled token cleanup job at {}", Instant.now());
+        Instant now = Instant.now();
+        log.info("Starting scheduled security token cleanup job at {}", now);
         try {
-            // Cleanup logic can be expanded here based on expiry date
-            log.info("Completed scheduled token cleanup job successfully");
+            long deletedRefresh = refreshTokenRepository.deleteByExpiryDateBefore(now);
+            long deletedReset = passwordResetTokenRepository.deleteByExpiresAtBefore(now);
+            log.info("Completed scheduled token cleanup: purged {} expired refresh tokens and {} expired password reset tokens",
+                    deletedRefresh, deletedReset);
         } catch (Exception ex) {
             log.error("Error during scheduled token cleanup: {}", ex.getMessage(), ex);
         }

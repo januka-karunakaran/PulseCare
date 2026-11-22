@@ -31,6 +31,9 @@ public interface NotificationService {
     // Delete notification
     void deleteNotification(String notificationId);
 
+    // Delete notification with owner check
+    void deleteNotification(String notificationId, String ownerUserId);
+
     // Delete all notifications for user
     void deleteAllNotifications(String userId);
 

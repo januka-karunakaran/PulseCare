@@ -3,10 +3,12 @@ package com.hospital.backend.repository;
 import com.hospital.backend.model.RefreshToken;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
+import java.time.Instant;
 import java.util.Optional;
 
 public interface RefreshTokenRepository extends MongoRepository<RefreshToken, String> {
     Optional<RefreshToken> findByToken(String token);
     Optional<RefreshToken> deleteByToken(String token);
     void deleteByUserId(String userId);
+    long deleteByExpiryDateBefore(Instant now);
 }

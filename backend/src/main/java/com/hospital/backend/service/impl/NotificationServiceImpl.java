@@ -47,11 +47,22 @@ public class NotificationServiceImpl implements NotificationService {
         try {
             Notification saved = createNotification(notification);
 
+            // Send to userId destination
             messagingTemplate.convertAndSendToUser(
                     userId,
                     "/queue/notifications",
                     mapToResponse(saved)
             );
+
+            // Also send to user email destination if different (matches Principal.getName() in Spring Security)
+            String userEmail = resolveUserEmail(userId);
+            if (userEmail != null && !userEmail.equals(userId)) {
+                messagingTemplate.convertAndSendToUser(
+                        userEmail,
+                        "/queue/notifications",
+                        mapToResponse(saved)
+                );
+            }
 
             log.info("Notification sent to user: {} - {}", userId, saved.getTitle());
         } catch (Exception e) {
@@ -106,6 +117,16 @@ public class NotificationServiceImpl implements NotificationService {
     public void deleteNotification(String notificationId) {
         notificationRepository.findById(notificationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Notification not found"));
+        notificationRepository.deleteById(notificationId);
+    }
+
+    @Override
+    public void deleteNotification(String notificationId, String ownerUserId) {
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Notification not found"));
+        if (!notification.getUserId().equals(ownerUserId)) {
+            throw new org.springframework.security.access.AccessDeniedException("You are not authorized to delete this notification");
+        }
         notificationRepository.deleteById(notificationId);
     }
 

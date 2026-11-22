@@ -7,6 +7,7 @@ import com.hospital.backend.exception.AppointmentSlotConflictException;
 import com.hospital.backend.exception.BadRequestException;
 import com.hospital.backend.exception.InvalidBookingTransitionException;
 import com.hospital.backend.exception.ResourceNotFoundException;
+import com.hospital.backend.event.AppointmentEventPublisher;
 import com.hospital.backend.model.*;
 import com.hospital.backend.repository.AppointmentRepository;
 import com.hospital.backend.repository.AppointmentSlotReservationRepository;
@@ -16,8 +17,8 @@ import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.service.AppointmentService;
 import com.hospital.backend.service.AvailabilityService;
 import com.hospital.backend.service.NotificationService;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -35,7 +36,6 @@ import java.util.Locale;
  * Eliminates double-booking of doctor slots and duplicate daily queue tokens across distributed instances.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AppointmentServiceImpl implements AppointmentService {
 
@@ -47,6 +47,44 @@ public class AppointmentServiceImpl implements AppointmentService {
     private final AvailabilityService availabilityService;
     private final UserRepository userRepository;
     private final MongoTemplate mongoTemplate;
+    private final AppointmentEventPublisher appointmentEventPublisher;
+
+    @Autowired
+    public AppointmentServiceImpl(
+            AppointmentRepository appointmentRepository,
+            AppointmentSlotReservationRepository slotReservationRepository,
+            DoctorRepository doctorRepository,
+            PatientRepository patientRepository,
+            NotificationService notificationService,
+            AvailabilityService availabilityService,
+            UserRepository userRepository,
+            MongoTemplate mongoTemplate,
+            AppointmentEventPublisher appointmentEventPublisher
+    ) {
+        this.appointmentRepository = appointmentRepository;
+        this.slotReservationRepository = slotReservationRepository;
+        this.doctorRepository = doctorRepository;
+        this.patientRepository = patientRepository;
+        this.notificationService = notificationService;
+        this.availabilityService = availabilityService;
+        this.userRepository = userRepository;
+        this.mongoTemplate = mongoTemplate;
+        this.appointmentEventPublisher = appointmentEventPublisher;
+    }
+
+    public AppointmentServiceImpl(
+            AppointmentRepository appointmentRepository,
+            AppointmentSlotReservationRepository slotReservationRepository,
+            DoctorRepository doctorRepository,
+            PatientRepository patientRepository,
+            NotificationService notificationService,
+            AvailabilityService availabilityService,
+            UserRepository userRepository,
+            MongoTemplate mongoTemplate
+    ) {
+        this(appointmentRepository, slotReservationRepository, doctorRepository,
+                patientRepository, notificationService, availabilityService, userRepository, mongoTemplate, null);
+    }
 
     @Override
     public Appointment createAppointment(AppointmentRequest request) {
@@ -156,7 +194,15 @@ public class AppointmentServiceImpl implements AppointmentService {
             throw ex;
         }
 
-        // 8. Notifications (non-blocking for appointment persistence)
+        // 8. Notifications & Domain Events (non-blocking for appointment persistence)
+        try {
+            if (appointmentEventPublisher != null) {
+                appointmentEventPublisher.publishAppointmentCreated(savedAppointment);
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to publish AppointmentCreated domain event: {}", ex.getMessage());
+        }
+
         try {
             notificationService.notifyAppointmentCreated(
                     savedAppointment.getId(),
@@ -257,7 +303,15 @@ public class AppointmentServiceImpl implements AppointmentService {
             releaseSlotReservation(appointment);
         }
 
-        // 4. Send notification on valid status change
+        // 4. Domain Events & Notifications on valid status change
+        try {
+            if (appointmentEventPublisher != null) {
+                appointmentEventPublisher.publishAppointmentStatusChanged(updatedAppointment, currentStatus, targetStatus);
+            }
+        } catch (Exception ex) {
+            log.warn("Failed to publish appointment status change domain event: {}", ex.getMessage());
+        }
+
         try {
             if ("CANCELLED".equals(targetStatus)) {
                 notificationService.notifyAppointmentCancelled(

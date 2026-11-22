@@ -1,8 +1,8 @@
 package com.hospital.backend.service;
 
 /**
- * Sends transactional HTML emails via Gmail SMTP.
- * All methods are no-ops when mail is disabled.
+ * Sends transactional HTML emails via SMTP.
+ * All methods are no-ops or safely handle errors when mail is disabled.
  */
 public interface MailService {
 
@@ -25,6 +25,14 @@ public interface MailService {
     void sendAppointmentUpdatedToPatient(
             String toEmail, String patientName,
             String doctorName, String newStatus);
+
+    void sendAppointmentReminderToPatient(
+            String toEmail, String patientName,
+            String doctorName, String date, String time);
+
+    void sendAppointmentReminderToDoctor(
+            String toEmail, String doctorName,
+            String patientName, String date, String time);
 
     void sendPrescriptionReadyToPatient(
             String toEmail, String patientName, String doctorName, String diagnosis);
