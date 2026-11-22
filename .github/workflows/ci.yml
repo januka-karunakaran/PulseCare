@@ -17,8 +17,8 @@ jobs:
   # ========================================================
   # Backend Quality Gate: Compile, Validate, Unit & Integration Tests
   # ========================================================
-  backend-build-test:
-    name: Backend Build & Test (Java 17 / Spring Boot)
+  backend-tests:
+    name: backend-tests
     runs-on: ubuntu-latest
 
     services:
@@ -43,21 +43,28 @@ jobs:
 
       - name: Run Backend Unit & Integration Tests
         working-directory: ./backend
-        run: ./mvnw -B test || mvn -B test
+        run: ./mvnw -B test
         env:
           MAIL_ENABLED: 'false'
           JWT_SECRET: ci-only-jwt-secret-with-at-least-256-bits-entropy-guaranteed
           DOCKER_API_VERSION: '1.44'
 
+      - name: Upload Surefire Test Reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: backend/target/surefire-reports
+
       - name: Build Production JAR
         working-directory: ./backend
-        run: ./mvnw -B package -DskipTests || mvn -B package -DskipTests
+        run: ./mvnw -B package -DskipTests
 
   # ========================================================
   # Frontend Quality Gate: Dependency Check, Lint & Build
   # ========================================================
-  frontend-build-test:
-    name: Frontend Build & Test (Next.js 16 / React 19)
+  frontend-checks:
+    name: frontend-checks
     runs-on: ubuntu-latest
 
     steps:
@@ -89,10 +96,10 @@ jobs:
   # ========================================================
   # Infrastructure Quality Gate: Compose Config & Container Builds
   # ========================================================
-  container-build-validation:
-    name: Container & Compose Architecture Validation
+  container-validation:
+    name: container-validation
     runs-on: ubuntu-latest
-    needs: [backend-build-test, frontend-build-test]
+    needs: [backend-tests, frontend-checks]
 
     steps:
       - name: Checkout Code
@@ -149,3 +156,49 @@ jobs:
             NEXT_PUBLIC_API_BASE=http://localhost:8080/api
             NEXT_PUBLIC_WS_URL=ws://localhost:8080/ws
           tags: hms-frontend:ci-check
+
+  # ========================================================
+  # Deployment Gate: Publish Docker Images (Main Branch Only)
+  # ========================================================
+  publish-images:
+    name: publish-images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend-tests, frontend-checks, container-validation]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/hospital-management-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          build-args: |
+            NEXT_PUBLIC_API_BASE=${{ vars.NEXT_PUBLIC_API_BASE }}
+            NEXT_PUBLIC_WS_URL=${{ vars.NEXT_PUBLIC_WS_URL }}
+          tags: ghcr.io/${{ github.repository_owner }}/hospital-management-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

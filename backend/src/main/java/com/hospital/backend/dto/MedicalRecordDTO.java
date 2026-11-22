@@ -17,4 +17,7 @@ public class MedicalRecordDTO {
     private String description;
     private String doctorName;
     private String status;
+    private String encounterId;
+    private String diagnosis;
+    private String signedAt;
 }

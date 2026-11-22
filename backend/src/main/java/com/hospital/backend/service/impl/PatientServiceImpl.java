@@ -107,9 +107,13 @@ public class PatientServiceImpl implements PatientService {
         List<Prescription> prescriptions = prescriptionRepository.findByPatientId(patientId);
         for (Prescription presc : prescriptions) {
             User doctor = userRepository.findById(presc.getDoctorId()).orElse(null);
+            String prescDate = "Unknown";
+            if (presc.getCreatedAt() != null) {
+                prescDate = presc.getCreatedAt().contains("T") ? presc.getCreatedAt().split("T")[0] : presc.getCreatedAt();
+            }
             timeline.add(MedicalRecordDTO.builder()
                     .id(presc.getId())
-                    .date(presc.getCreatedAt().split("T")[0])
+                    .date(prescDate)
                     .type("PRESCRIPTION")
                     .title("Prescription from " + (doctor != null ? doctor.getFullName() : "Unknown"))
                     .description(presc.getDiagnosis() != null ? presc.getDiagnosis() : "Routine Checkup")

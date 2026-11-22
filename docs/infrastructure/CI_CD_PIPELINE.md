@@ -1,63 +1,51 @@
-# Continuous Integration & Delivery (CI/CD) Pipeline
+# CI/CD Pipeline Architecture & Operations
 
 ## Overview
-PulseCare 2.0 employs hardened GitHub Actions workflows to enforce automated security, code quality, testing, container validation, and deployment gates.
+PulseCare 2.0 utilizes a unified GitHub Actions pipeline (`.github/workflows/ci.yml`) to enforce code quality, security controls, and deployment integrity across both the Spring Boot backend and Next.js frontend.
 
----
+## Pipeline Trigger Matrix
 
-## 1. Workflow Architecture
-
-PulseCare maintains two primary workflows:
-
-### 1.1 Pull Request & Build Validation (`.github/workflows/ci.yml`)
-- **Triggers:**
-  - Pull requests targeting `main`
-  - Direct pushes to `main` and `develop`
-- **Security Context:**
-  - Top-level least-privilege security permission: `permissions: contents: read`
-  - Strict concurrency cancellation: `cancel-in-progress: true`
-- **Jobs:**
-  1. `backend-build-test`:
-     - Sets up Java 17 (Eclipse Temurin).
-     - Executes `./mvnw -B test` (Unit tests + Testcontainers integration tests).
-     - Compiles production JAR: `./mvnw -B package -DskipTests`.
-     - Zero tolerance: `continue-on-error` is strictly disallowed.
-  2. `frontend-build-test`:
-     - Sets up Node.js 22.
-     - Performs clean install: `npm ci`.
-     - Executes static analysis: `npm run lint`.
-     - Compiles Next.js bundle: `npm run build`.
-  3. `container-build-validation`:
-     - Depends on `backend-build-test` and `frontend-build-test`.
-     - Validates local compose: `docker compose config --quiet`.
-     - Verifies fail-closed rejection on missing production compose secrets.
-     - Validates production compose schema with synthetic test secrets.
-     - Verifies MongoDB host port is unexposed in production compose.
-     - Validates backend multi-stage Docker build: `docker build ./backend`.
-     - Validates frontend multi-stage Docker build: `docker build ./frontend`.
-
-### 1.2 Production Release & Registry Delivery (`.github/workflows/ci-cd.yml`)
-- **Triggers:**
-  - Direct pushes to `main` only.
-- **Security Context:**
-  - Least-privilege top-level permission: `permissions: contents: read`.
-  - Step-isolated permission `packages: write` granted strictly to the `publish-images` job.
-- **Delivery Strategy:**
-  - Authenticates to GitHub Container Registry (`ghcr.io`) using temporary `${{ secrets.GITHUB_TOKEN }}`.
-  - Pushes hardened production images:
-    - `ghcr.io/<owner>/hospital-management-backend:latest`
-    - `ghcr.io/<owner>/hospital-management-frontend:latest`
-  - Utilizes GitHub Actions cache (`type=gha`) for optimal build speeds.
-
----
-
-## 2. Quality Gates & Failure Modes
-
-| Gate | Description | Action on Failure |
+| Event | Target Branches | Executed Jobs |
 | :--- | :--- | :--- |
-| **Backend Test Suite** | 47 Unit, Slice & Integration Tests | Blocks merge, halts pipeline immediately |
-| **Frontend Lint** | ESLint compliance | Blocks merge, halts pipeline immediately |
-| **Frontend Build** | Next.js compilation & TypeScript validation | Blocks merge, halts pipeline immediately |
-| **Compose Schema** | Docker compose syntax & fail-closed secret checks | Blocks merge, halts pipeline immediately |
-| **Container Build** | Multi-stage Dockerfile build validation | Blocks merge, halts pipeline immediately |
-| **Test Isolation** | Dynamic Testcontainers verification | Fails closed if container cannot start |
+| `pull_request` | `main` | `backend-tests`, `frontend-checks`, `container-validation` |
+| `push` | `develop` | `backend-tests`, `frontend-checks`, `container-validation` |
+| `push` | `main` | `backend-tests`, `frontend-checks`, `container-validation`, `publish-images` |
+
+## Detailed Job Execution
+
+### 1. `backend-tests`
+- **Environment:** Ubuntu Latest, Java 17 (Eclipse Temurin)
+- **Services:** MongoDB 7.0 container on port 27017
+- **Execution:**
+  - `chmod +x backend/mvnw`
+  - `./mvnw -B test`
+  - Surefire report artifact uploaded on failure via `actions/upload-artifact@v4`
+  - `./mvnw -B package -DskipTests` to verify artifact packaging.
+
+### 2. `frontend-checks`
+- **Environment:** Ubuntu Latest, Node.js 22
+- **Execution:**
+  - `npm ci` with cache dependency path tracking `package-lock.json`
+  - `npm run lint` (ESLint)
+  - `npm run build` (Next.js 16 production build)
+
+### 3. `container-validation`
+- **Dependencies:** Requires both `backend-tests` and `frontend-checks` to succeed.
+- **Execution:**
+  - Validates `docker-compose.yml` schema (`docker compose config --quiet`).
+  - Verifies fail-closed enforcement on `docker-compose.prod.yml` (ensures failure if production secrets are missing).
+  - Validates `docker-compose.prod.yml` with synthetic secret inputs.
+  - Verifies MongoDB host port 27017 is not exposed in production compose.
+  - Builds Backend Dockerfile with Buildx (dry-run).
+  - Builds Frontend Dockerfile with Buildx (dry-run).
+
+### 4. `publish-images`
+- **Condition:** Runs exclusively on direct `push` to `refs/heads/main`.
+- **Target Registry:** GitHub Container Registry (`ghcr.io/januka-karunakaran/hospital-management-*`).
+- **Permissions:** `packages: write`, `contents: read`.
+
+## Local Developer Pre-Push Quality Gate
+
+Developers must run the pre-push quality gate script before opening or updating pull requests:
+- **Bash / Linux / macOS:** `./scripts/verify-quality.sh`
+- **PowerShell / Windows:** `.\scripts\verify-quality.ps1`

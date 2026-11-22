@@ -10,7 +10,8 @@ import {
   updateAppointmentStatus,
   getAllPatients,
 } from "@/services/appointmentService";
-import { FaCalendarCheck, FaSync, FaSearch, FaCheckCircle, FaTimesCircle, FaClock } from "react-icons/fa";
+import { FaCalendarCheck, FaSync, FaSearch, FaCheckCircle, FaTimesCircle, FaClock, FaStethoscope } from "react-icons/fa";
+import ClinicalConsultationModal from "@/components/ClinicalConsultationModal";
 
 const STATUS_BADGE = {
   PENDING: "badge-yellow",
@@ -28,6 +29,7 @@ export default function DoctorAppointmentsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [updatingId, setUpdatingId] = useState(null);
+  const [activeConsultAppt, setActiveConsultAppt] = useState(null);
 
   const user = typeof window !== "undefined" ? getUser() : null;
 
@@ -218,6 +220,14 @@ export default function DoctorAppointmentsPage() {
                                   className="btn btn-secondary btn-sm"
                                 ><FaClock style={{ fontSize: 11 }} /> Complete</button>
                               )}
+                              {["APPROVED", "COMPLETED"].includes(a.status) && (
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveConsultAppt(a)}
+                                  className="btn btn-primary btn-sm"
+                                  title="Open Clinical Encounter"
+                                ><FaStethoscope style={{ fontSize: 11 }} /> Consult</button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -230,6 +240,15 @@ export default function DoctorAppointmentsPage() {
           </div>
         </main>
       </div>
+
+      {activeConsultAppt && (
+        <ClinicalConsultationModal
+          appointment={activeConsultAppt}
+          patient={patientMap[activeConsultAppt.patientId]}
+          onClose={() => setActiveConsultAppt(null)}
+          onUpdated={loadData}
+        />
+      )}
     </ProtectedRoute>
   );
 }

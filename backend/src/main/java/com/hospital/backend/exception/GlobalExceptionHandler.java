@@ -118,6 +118,48 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(ClinicalRecordConflictException.class)
+    public ResponseEntity<ErrorResponse> handleClinicalConflict(ClinicalRecordConflictException ex) {
+        log.warn("Clinical record conflict: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(InvalidVitalObservationException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidVital(InvalidVitalObservationException ex) {
+        log.warn("Invalid vital observation: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Bad Request")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<ErrorResponse> handleOptimisticLock(org.springframework.dao.OptimisticLockingFailureException ex) {
+        log.warn("Optimistic locking failure: {}", ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(com.hospital.backend.constant.ErrorCodes.CLINICAL_RECORD_VERSION_CONFLICT)
+                .message("The record was updated by another concurrent session. Please reload and try again.")
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(DuplicateResourceException.class)
     public ResponseEntity<ErrorResponse> handleDuplicate(DuplicateResourceException ex) {
         log.warn("Duplicate resource: {}", ex.getMessage());
