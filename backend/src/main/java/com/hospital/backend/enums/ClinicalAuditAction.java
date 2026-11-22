@@ -1,0 +1,10 @@
+package com.hospital.backend.enums;
+
+public enum ClinicalAuditAction {
+    CLINICAL_RECORD_VIEWED,
+    CLINICAL_RECORD_CREATED,
+    CLINICAL_RECORD_UPDATED,
+    CLINICAL_RECORD_SIGNED,
+    CLINICAL_RECORD_AMENDED,
+    CLINICAL_ACCESS_DENIED
+}

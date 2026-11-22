@@ -26,6 +26,14 @@ public final class ErrorCodes {
     public static final String BIZ_DOCTOR_UNAVAILABLE = "BIZ_003";
     public static final String BIZ_INSUFFICIENT_INVENTORY = "BIZ_004";
 
+    // Clinical Records (CLINICAL_xxx)
+    public static final String CLINICAL_RECORD_ACCESS_DENIED = "CLINICAL_001";
+    public static final String ENCOUNTER_ALREADY_EXISTS = "CLINICAL_002";
+    public static final String INVALID_ENCOUNTER_TRANSITION = "CLINICAL_003";
+    public static final String CLINICAL_RECORD_VERSION_CONFLICT = "CLINICAL_004";
+    public static final String SIGNED_NOTE_IMMUTABLE = "CLINICAL_005";
+    public static final String INVALID_VITAL_OBSERVATION = "CLINICAL_006";
+
     // System (SYS_xxx)
     public static final String SYS_INTERNAL_ERROR = "SYS_001";
     public static final String SYS_RATE_LIMIT_EXCEEDED = "SYS_002";

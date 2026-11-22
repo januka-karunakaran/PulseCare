@@ -247,4 +247,62 @@ public class AuthorizationService {
                         .map(d -> user.getId().equals(d.getUserId()))
                         .orElse(false));
     }
+
+    public boolean canAccessEncounter(com.hospital.backend.model.ClinicalEncounter encounter) {
+        if (encounter == null) return false;
+        User user = getCurrentUser();
+
+        if (user.getRole() == Role.ADMIN) {
+            return true;
+        }
+
+        if (user.getRole() == Role.PATIENT) {
+            // Patients can only view SIGNED or AMENDED encounters for their own identity
+            if (encounter.getStatus() == com.hospital.backend.enums.EncounterStatus.DRAFT ||
+                encounter.getStatus() == com.hospital.backend.enums.EncounterStatus.IN_PROGRESS) {
+                return false;
+            }
+            return isPatientOwner(user, encounter.getPatientId());
+        }
+
+        if (user.getRole() == Role.DOCTOR) {
+            // Doctors can access if assigned doctor or has verified clinical relationship
+            return isDoctorOwner(user, encounter.getDoctorId()) ||
+                    hasDoctorPatientRelationship(user.getId(), encounter.getPatientId());
+        }
+
+        return false;
+    }
+
+    public void checkEncounterAccess(com.hospital.backend.model.ClinicalEncounter encounter) {
+        if (encounter == null) {
+            throw new ResourceNotFoundException("Clinical encounter not found");
+        }
+        if (!canAccessEncounter(encounter)) {
+            log.warn("Unauthorized attempt to access clinical encounter id: {} by user: {}", encounter.getId(), getCurrentUser().getEmail());
+            throw new AccessDeniedException("You are not authorized to access this clinical encounter");
+        }
+    }
+
+    public void checkEncounterSigning(com.hospital.backend.model.ClinicalEncounter encounter) {
+        if (encounter == null) {
+            throw new ResourceNotFoundException("Clinical encounter not found");
+        }
+        User user = getCurrentUser();
+        if (user.getRole() != Role.DOCTOR || !isDoctorOwner(user, encounter.getDoctorId())) {
+            log.warn("Unauthorized attempt to sign clinical encounter id: {} by user: {}", encounter.getId(), user.getEmail());
+            throw new AccessDeniedException("Only the assigned doctor is authorized to sign or amend this clinical encounter");
+        }
+    }
+
+    public boolean canModifyClinicalProfile(String patientId) {
+        if (patientId == null) return false;
+        User user = getCurrentUser();
+        // Only clinical staff (Doctors) or Admins can modify clinical profile/allergies/conditions
+        if (user.getRole() == Role.ADMIN) return true;
+        if (user.getRole() == Role.DOCTOR) {
+            return hasDoctorPatientRelationship(user.getId(), patientId);
+        }
+        return false;
+    }
 }

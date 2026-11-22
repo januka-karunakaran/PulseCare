@@ -82,3 +82,23 @@ This document describes the REST API endpoints provided by the Hospital Manageme
 - **STOMP Broker Endpoint:** `/ws`
 - **User Destination:** `/user/queue/notifications`
 - **Topic Channels:** `/topic/appointments`, `/topic/broadcasts`
+
+---
+
+## 📋 8. Clinical Records & Encounters (`/api/clinical`)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `POST` | `/api/clinical/encounters` | Doctor / Admin | Initiates or resumes a clinical encounter from an appointment |
+| `GET` | `/api/clinical/encounters/{id}` | Authenticated | Retrieves encounter details (finalized for patients, draft for clinicians) |
+| `GET` | `/api/clinical/patients/{id}/encounters` | Patient / Doctor / Admin | Lists encounters for patient (finalized only for patient) |
+| `PUT` | `/api/clinical/encounters/{id}/draft` | Doctor / Admin | Updates draft encounter narrative & chief complaint |
+| `PUT` | `/api/clinical/encounters/{id}/soap` | Doctor / Admin | Saves draft SOAP consultation notes |
+| `POST` | `/api/clinical/encounters/{id}/sign` | Doctor | Signs and finalizes encounter (makes note immutable) |
+| `POST` | `/api/clinical/encounters/{id}/amend` | Doctor | Appends a traceable clinical addendum with justification |
+| `POST` | `/api/clinical/encounters/{id}/vitals` | Doctor / Admin | Records vital sign observations within plausible limits |
+| `GET` | `/api/clinical/encounters/{id}/vitals` | Authenticated | Fetches vital signs recorded for an encounter |
+| `GET` | `/api/clinical/patients/{id}/vitals` | Patient / Doctor / Admin | Fetches historical vital signs for a patient |
+| `GET` | `/api/clinical/patients/{id}/profile` | Patient / Doctor / Admin | Retrieves clinical profile (allergies, medical history) |
+| `PUT` | `/api/clinical/patients/{id}/profile` | Doctor / Admin | Updates clinician-verified medical profile and allergies |
+| `GET` | `/api/clinical/patients/{id}/timeline` | Patient / Doctor / Admin | Unified chronological medical timeline (encounters, vitals, Rx, labs) |
