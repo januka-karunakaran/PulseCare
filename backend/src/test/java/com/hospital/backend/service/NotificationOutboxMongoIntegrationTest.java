@@ -216,7 +216,7 @@ public class NotificationOutboxMongoIntegrationTest {
         notificationRepository.save(persistedBeforeCrash);
 
         // 3. Worker 2 claims the item and runs processItem
-        Optional<NotificationOutbox> recoveredOpt = outboxRepository.claimNextEligible("worker-alive-2", 30, now);
+        Optional<NotificationOutbox> recoveredOpt = outboxRepository.claimNextEligible(outboxProcessor.getWorkerId(), 30, now);
         assertThat(recoveredOpt).isPresent();
 
         outboxProcessor.processItem(recoveredOpt.get());

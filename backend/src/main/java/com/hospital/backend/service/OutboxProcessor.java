@@ -137,9 +137,10 @@ public class OutboxProcessor {
     }
 
     private boolean updateDeliveredWithLease(NotificationOutbox item, Instant now) {
+        String claimer = (item.getClaimedBy() != null && !item.getClaimedBy().isBlank()) ? item.getClaimedBy() : workerId;
         Query query = new Query(Criteria.where("_id").is(item.getId())
                 .and("status").is(OutboxStatus.PROCESSING.name())
-                .and("claimedBy").is(workerId));
+                .and("claimedBy").is(claimer));
 
         Update update = new Update()
                 .set("status", OutboxStatus.DELIVERED.name())
