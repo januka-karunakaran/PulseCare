@@ -2,7 +2,7 @@
 
 ## 1. Outbox Entity & Compound Indexes
 
-The `notification_outbox` MongoDB collection tracks every notification destined for external or internal dispatch.
+The `notification_outbox` collection tracks every notification destined for external or internal dispatch.
 
 ### Schema Definition
 - `id` (String / ObjectId): Unique outbox record ID.
@@ -30,31 +30,36 @@ The `notification_outbox` MongoDB collection tracks every notification destined 
 
 ---
 
-## 2. Atomic Lease Protocol & Multi-Node Safety
+## 2. In-App Notification Idempotency with `sourceOutboxId`
 
-To guarantee safe operation in clustered or multi-instance deployments without distributed lock systems:
+To prevent duplicate in-app notifications if a worker dies after writing to `notifications` but before marking the outbox item `DELIVERED`:
+
+1. `Notification` entity contains `@Indexed(unique = true, sparse = true) private String sourceOutboxId;`.
+2. Before creating a notification, `OutboxProcessor` queries `findBySourceOutboxId(item.getId())`.
+3. If an existing record is found:
+   - It reuses the saved notification.
+   - It never overwrites or resets `isRead` or `readAt` timestamps.
+4. If concurrent workers attempt insertion, MongoDB unique index constraint catches `DuplicateKeyException` and safely falls back to reading the existing notification.
+
+---
+
+## 3. Atomic Lease Protocol & Worker Protection
 
 1. **Atomic Acquisition (`findAndModify`)**:
-   ```javascript
-   db.notification_outbox.findAndModify({
-     query: {
-       $or: [
-         { status: { $in: ["PENDING", "RETRY"] }, nextAttemptAt: { $lte: ISODate() } },
-         { status: "PROCESSING", claimUntil: { $lt: ISODate() } }
-       ]
-     },
-     update: {
-       $set: {
-         status: "PROCESSING",
-         claimedBy: "worker-inst-1",
-         claimUntil: ISODate(now + 30 seconds),
-         updatedAt: ISODate()
-       }
-     },
-     new: true
-   })
+   Claims ready `PENDING`/`RETRY` records or expired `PROCESSING` records (`claimUntil < now`) with a 30-second lease.
+2. **Lease Guarded Updates**:
+   When transitioning an outbox item to `DELIVERED`:
+   ```java
+   Query query = new Query(Criteria.where("_id").is(item.getId())
+           .and("status").is(OutboxStatus.PROCESSING.name())
+           .and("claimedBy").is(workerId));
+   Update update = new Update()
+           .set("status", OutboxStatus.DELIVERED.name())
+           .set("deliveredAt", now)
+           .set("updatedAt", now);
+   long modified = mongoTemplate.updateFirst(query, update, NotificationOutbox.class).getModifiedCount();
    ```
-2. **Lease Recovery**: If a worker node crashes mid-dispatch, its 30-second lease expires. The next available worker automatically reclaims the record and retries delivery.
+   If a worker's lease expired and another worker stole the record, `modified == 0`, preventing stale workers from overwriting newer states.
 3. **Exponential Backoff**: Transient errors trigger exponential backoff:
    $$\text{backoffSeconds} = \min(2^{\text{attempt}} \times 5 + \text{jitter}, 3600)$$
 4. **Dead-Letter State (`FAILED`)**: After 5 attempts, records transition to `FAILED` with explicit `lastErrorCode` and `lastErrorMessage`.

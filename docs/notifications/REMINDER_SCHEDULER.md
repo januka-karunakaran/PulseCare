@@ -1,38 +1,38 @@
 # Automated Appointment Reminder Scheduler
 
-## 1. Specification & Timezone Handling
+## 1. Timezone Handling & Business Rules
 
-The `AppointmentReminderScheduler` executes periodically (default every 15 minutes) to evaluate appointments occurring within the next 24-hour window.
+The `AppointmentReminderScheduler` evaluates appointments occurring within the 24-hour reminder window strictly in the hospital business timezone (`Asia/Colombo`).
 
-### Hospital Business Timezone: `Asia/Colombo`
-- Clinical appointment times are stored in local hospital wall-clock time (`yyyy-MM-dd` and `hh:mm a`).
-- To prevent host JVM timezone skew, the scheduler explicitly binds to `ZoneId.of("Asia/Colombo")`.
-- Local dates and times are resolved to UTC `Instant` values:
-  ```java
-  ZonedDateTime.of(localDate, localTime, ZoneId.of("Asia/Colombo")).toInstant();
-  ```
+```java
+ZoneId zoneId = ZoneId.of("Asia/Colombo");
+ZonedDateTime.of(localDate, localTime, zoneId).toInstant();
+```
 
----
-
-## 2. Business Rules & Edge Cases
-
-| Condition | Action Taken | Rationale |
-|---|---|---|
-| Appointment starts within $(T_{\text{start}} - 24\text{h}) \dots T_{\text{start}}$ | Enqueue `IN_APP` and `EMAIL` reminder | Standard 24h patient and doctor notice |
-| Appointment starts $> 26$ hours away | Suppress | Not yet due for reminder |
-| Appointment has already started / past | Suppress | Sending reminder after appointment start is confusing and invalid |
-| Appointment status is `CANCELLED` | Suppress | Patients must not receive reminders for cancelled visits |
-| Appointment status is `COMPLETED` | Suppress | No reminder needed for concluded visits |
-| System restarts or delay occurs | Catch-up | Scheduler lookahead window captures due appointments safely |
-| Duplicate reminder check | Deduplication key check | Prevents multiple notifications per appointment per recipient |
+### Deterministic Clock Support
+The scheduler supports an injected `java.time.Clock` (`setClock(Clock)`), enabling unit and regression test suites to test exact wall-clock moments deterministically.
 
 ---
 
-## 3. Deduplication Key Format
+## 2. Schedule-Aware Deduplication & Rescheduling Policy
 
-Reminders use deterministic keys:
-- `reminder:24h:<appointmentId>:<patientUserId>:IN_APP`
-- `reminder:24h:<appointmentId>:<patientUserId>:EMAIL`
-- `reminder:24h:<appointmentId>:<doctorUserId>:IN_APP`
+If an appointment is rescheduled after a reminder was queued:
+1. When rescheduling in `AppointmentServiceImpl`:
+   `cancelPendingForAggregate(appointmentId)` immediately transitions prior pending outbox reminders to `CANCELLED`.
+2. Deduplication Key Format:
+   ```
+   reminder:24h:<appointmentId>:<appointmentDate>@<appointmentTime>:<userId>:<channel>
+   ```
+   Because the key includes the date and time, a rescheduled appointment generates a new distinct deduplication key, allowing the new schedule to receive its appropriate 24-hour reminder.
+3. Pre-Dispatch Verification in `OutboxProcessor`:
+   When `OutboxProcessor` processes `APPOINTMENT_REMINDER_DUE`:
+   - Checks `appointmentRepository.findById(aggregateId)`.
+   - If appointment was deleted or status is no longer `CONFIRMED`/`PENDING`, the reminder is cancelled.
+   - If the appointment date was changed from what is stored in outbox metadata, the reminder is cancelled with `APPOINTMENT_RESCHEDULED`.
 
-If an appointment is cancelled before delivery, `cancelPendingByAggregateId(appointmentId)` automatically transitions pending outbox entries to `CANCELLED`.
+---
+
+## 3. Strict Time Parsing
+- Disallowed silent default to 09:00 AM.
+- If an appointment's time string is null, empty, or unparseable, `parseAppointmentStartInstant` returns `null` and logs a warning.
+- Ensures malformed appointment data never triggers incorrect reminder notifications.

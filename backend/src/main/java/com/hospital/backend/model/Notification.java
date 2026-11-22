@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
@@ -18,6 +19,9 @@ public class Notification {
 
     @Id
     private String id;
+
+    @Indexed(unique = true, sparse = true)
+    private String sourceOutboxId;  // Deterministic idempotency reference to outbox entry
 
     private String userId;          // Recipient
 

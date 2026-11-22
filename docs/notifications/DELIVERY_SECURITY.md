@@ -2,10 +2,7 @@
 
 ## 1. REST Endpoint Security & Ownership Verification
 
-Prior to Feature 02.3, `NotificationController.deleteNotification(id)` allowed any authenticated user to delete notifications belonging to other patients or doctors simply by guessing or passing the notification ID.
-
-### Ownership Enforcement
-All notification deletion and update operations now strictly resolve the caller's identity via Spring Security's authenticated principal:
+All notification deletion and update operations strictly resolve the caller's identity via Spring Security's authenticated principal:
 
 ```java
 @DeleteMapping("/{notificationId}")
@@ -26,23 +23,24 @@ In `NotificationServiceImpl`, if the target notification does not exist, a 404 i
 
 ## 2. WebSocket & STOMP Security
 
-### Principal Alignment
-Spring Security's JWT authentication sets `UserDetails.getUsername()` (user's email address) as the STOMP `Principal.getName()`. If notifications are broadcast exclusively to `userId`, STOMP user session registries fail to route messages.
+### Canonical Destination Enforcement
+PulseCare enforces `/user/queue/notifications` as the canonical destination for private client subscriptions.
+- When an authenticated user subscribes to `/user/queue/notifications`, Spring's `UserDestinationMessageHandler` translates the destination to the user's specific session.
+- Subscribing to arbitrary user-targeted destinations (e.g. `/user/someoneElse/queue/notifications`) is strictly forbidden.
+- Substring destination matching (`contains()`) was eliminated to prevent prefix/suffix domain spoofing.
 
-PulseCare implements dual-dispatch in `NotificationServiceImpl` and `OutboxProcessor`:
-1. Sends to `convertAndSendToUser(userId, "/queue/notifications", dto)`
-2. Sends to `convertAndSendToUser(userEmail, "/queue/notifications", dto)`
-
-### Channel Interception & Broadcast Protection
-In `WebSocketConfig`, an inbound channel interceptor inspects every frame:
-- Validates that users can only subscribe to `/user/queue/notifications` corresponding to their own session.
-- Strictly blocks any client `SEND` frame targeting broker destinations (`/topic`, `/queue`), preventing malicious clients from injecting fake alerts or spoofing hospital staff.
+### Interceptor Validation Rules
+1. `destination.equals("/user/queue/notifications")`:
+   Allowed ONLY if `principal != null`. Unauthenticated requests throw `AccessDeniedException`.
+2. Explicit user destination `/user/{username}/queue/notifications`:
+   Must strictly match `username == principal.getName()` or `userId == principal.userId` via exact equality.
+3. Client `SEND` Protection:
+   Clients are forbidden from issuing `SEND` frames to `/topic/**`, `/queue/**`, or `/user/**`. Only `/app/**` endpoints are permissible for client messages.
 
 ---
 
-## 3. Email Security & Anti-Phishing Safeguards
+## 3. Email Security, Masking & Privacy
 
-- Branded headers and footers standardizing on PulseCare HMS.
-- Configurable `app.frontend.url` prevents host-header injection or hardcoded localhost URLs in production emails.
-- SMTP credentials managed exclusively through environment variables.
-- Mail dispatch failures are captured in outbox error metadata without logging sensitive credentials or tokens.
+- **Email Masking**: In logs and error messages, recipient emails are masked (e.g., `j***@gmail.com`) to protect personal data from exposure in log aggregation platforms.
+- **Error Sanitization**: Regex sanitization strips sensitive tokens, secrets, or passwords from `lastErrorMessage` before persisting to outbox records.
+- **Fail-Closed SMTP**: When `app.mail.enabled` is `false`, outbox email items are marked `CANCELLED` with `SMTP_DISABLED`, explicitly preventing false claims of external delivery.

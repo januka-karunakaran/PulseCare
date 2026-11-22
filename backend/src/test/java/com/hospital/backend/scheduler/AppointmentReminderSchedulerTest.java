@@ -14,15 +14,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -86,10 +85,48 @@ class AppointmentReminderSchedulerTest {
     }
 
     @Test
+    @DisplayName("Should strictly reject missing or blank appointment time and not default to 09:00 AM")
+    void testMissingAppointmentTimeReturnsNullWithoutDefaultingToNineAm() {
+        Instant nullTime = reminderScheduler.parseAppointmentStartInstant("2026-12-05", null, zoneId);
+        assertThat(nullTime).isNull();
+
+        Instant blankTime = reminderScheduler.parseAppointmentStartInstant("2026-12-05", "   ", zoneId);
+        assertThat(blankTime).isNull();
+
+        Instant unparseableTime = reminderScheduler.parseAppointmentStartInstant("2026-12-05", "noon-ish", zoneId);
+        assertThat(unparseableTime).isNull();
+    }
+
+    @Test
+    @DisplayName("Should support deterministic Clock injection for time-dependent testing")
+    void testClockInjectionForDeterministicEvaluation() {
+        Instant fixedInstant = Instant.parse("2026-12-01T05:00:00Z");
+        Clock fixedClock = Clock.fixed(fixedInstant, zoneId);
+        reminderScheduler.setClock(fixedClock);
+
+        // Appointment at 2026-12-02 10:30 AM Colombo is within 24 hours of fixed clock
+        Appointment appt = Appointment.builder()
+                .id("appt-clock-1")
+                .patientId("pat-1")
+                .doctorId("doc-1")
+                .appointmentDate("2026-12-02")
+                .appointmentTime("10:30 AM")
+                .status("CONFIRMED")
+                .build();
+
+        when(userRepository.existsById("pat-1")).thenReturn(true);
+        when(userRepository.existsById("doc-1")).thenReturn(true);
+        when(outboxRepository.existsByDeduplicationKey(anyString())).thenReturn(false);
+
+        boolean enqueued = reminderScheduler.processAppointmentReminder(appt, fixedInstant, zoneId);
+        assertThat(enqueued).isTrue();
+    }
+
+    @Test
     @DisplayName("Should enqueue 24-hour reminder when appointment is within reminder window")
     void testProcessAppointmentReminderDue() {
         ZonedDateTime nowColombo = ZonedDateTime.now(zoneId);
-        // Tomorrow at same hour -> exactly 24 hours away
+        // Tomorrow at same hour -> within 24 hours
         ZonedDateTime apptTime = nowColombo.plusHours(20);
 
         Appointment appt = Appointment.builder()

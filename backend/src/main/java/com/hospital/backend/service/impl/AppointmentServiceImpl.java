@@ -17,8 +17,8 @@ import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.service.AppointmentService;
 import com.hospital.backend.service.AvailabilityService;
 import com.hospital.backend.service.NotificationService;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -36,7 +36,6 @@ import java.util.Locale;
  * Eliminates double-booking of doctor slots and duplicate daily queue tokens across distributed instances.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AppointmentServiceImpl implements AppointmentService {
 
@@ -49,6 +48,29 @@ public class AppointmentServiceImpl implements AppointmentService {
     private final UserRepository userRepository;
     private final MongoTemplate mongoTemplate;
     private final AppointmentEventPublisher appointmentEventPublisher;
+
+    @Autowired
+    public AppointmentServiceImpl(
+            AppointmentRepository appointmentRepository,
+            AppointmentSlotReservationRepository slotReservationRepository,
+            DoctorRepository doctorRepository,
+            PatientRepository patientRepository,
+            NotificationService notificationService,
+            AvailabilityService availabilityService,
+            UserRepository userRepository,
+            MongoTemplate mongoTemplate,
+            AppointmentEventPublisher appointmentEventPublisher
+    ) {
+        this.appointmentRepository = appointmentRepository;
+        this.slotReservationRepository = slotReservationRepository;
+        this.doctorRepository = doctorRepository;
+        this.patientRepository = patientRepository;
+        this.notificationService = notificationService;
+        this.availabilityService = availabilityService;
+        this.userRepository = userRepository;
+        this.mongoTemplate = mongoTemplate;
+        this.appointmentEventPublisher = appointmentEventPublisher;
+    }
 
     public AppointmentServiceImpl(
             AppointmentRepository appointmentRepository,

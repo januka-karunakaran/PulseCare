@@ -22,11 +22,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
@@ -52,6 +48,12 @@ public class AppointmentReminderScheduler {
     @Value("${app.scheduling.timezone:Asia/Colombo}")
     private String configuredTimezone;
 
+    private Clock clock = Clock.system(ZoneId.of("Asia/Colombo"));
+
+    public void setClock(Clock clock) {
+        this.clock = clock;
+    }
+
     private static final List<DateTimeFormatter> TIME_FORMATTERS = List.of(
             DateTimeFormatter.ofPattern("hh:mm a", Locale.ENGLISH),
             DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH),
@@ -65,7 +67,7 @@ public class AppointmentReminderScheduler {
     @Scheduled(cron = "${app.scheduling.reminder-cron:0 */15 * * * ?}")
     public void processUpcomingAppointmentReminders() {
         ZoneId zoneId = getSafeZoneId();
-        ZonedDateTime nowZoned = ZonedDateTime.now(zoneId);
+        ZonedDateTime nowZoned = ZonedDateTime.now(clock.withZone(zoneId));
         Instant nowUtc = nowZoned.toInstant();
 
         // 24-hour reminder window: appointments starting between now and next 26 hours
@@ -107,7 +109,7 @@ public class AppointmentReminderScheduler {
             return false;
         }
 
-        // 2. Parse appointment start Instant in configured business timezone
+        // 2. Parse appointment start Instant in configured business timezone (requires valid time)
         Instant appointmentStartUtc = parseAppointmentStartInstant(appt.getAppointmentDate(), appt.getAppointmentTime(), zoneId);
         if (appointmentStartUtc == null) {
             return false;
@@ -135,6 +137,12 @@ public class AppointmentReminderScheduler {
         String doctorEmail = resolveDoctorEmail(appt.getDoctorId());
         String doctorName = resolveDoctorName(appt.getDoctorId());
 
+        // Validate that recipient IDs exist to avoid malformed notifications
+        if ((patientUserId == null || patientUserId.isBlank()) && (doctorUserId == null || doctorUserId.isBlank())) {
+            log.warn("Cannot schedule reminder for appointment {}: missing patient and doctor user IDs", appt.getId());
+            return false;
+        }
+
         boolean enqueuedAny = false;
 
         Map<String, String> metadata = new HashMap<>();
@@ -145,9 +153,12 @@ public class AppointmentReminderScheduler {
         metadata.put("doctorName", doctorName);
         metadata.put("status", appt.getStatus());
 
+        // Deduplication key accounts for schedule changes (date + time)
+        String scheduleKey = appt.getAppointmentDate() + "@" + (appt.getAppointmentTime() != null ? appt.getAppointmentTime().trim().replaceAll("\\s+", "") : "default");
+
         // Enqueue Patient In-App Reminder
-        String patientInAppKey = "reminder:24h:" + appt.getId() + ":" + patientUserId + ":IN_APP";
-        if (patientUserId != null && !outboxRepository.existsByDeduplicationKey(patientInAppKey)) {
+        String patientInAppKey = "reminder:24h:" + appt.getId() + ":" + scheduleKey + ":" + patientUserId + ":IN_APP";
+        if (patientUserId != null && !patientUserId.isBlank() && !outboxRepository.existsByDeduplicationKey(patientInAppKey)) {
             NotificationOutbox patientInApp = NotificationOutbox.builder()
                     .eventId("rem-" + UUID.randomUUID())
                     .eventType(AppointmentEventType.APPOINTMENT_REMINDER_DUE.name())
@@ -174,8 +185,8 @@ public class AppointmentReminderScheduler {
         }
 
         // Enqueue Patient Email Reminder
-        String patientEmailKey = "reminder:24h:" + appt.getId() + ":" + patientUserId + ":EMAIL";
-        if (patientEmail != null && !outboxRepository.existsByDeduplicationKey(patientEmailKey)) {
+        String patientEmailKey = "reminder:24h:" + appt.getId() + ":" + scheduleKey + ":" + patientUserId + ":EMAIL";
+        if (patientEmail != null && !patientEmail.isBlank() && !outboxRepository.existsByDeduplicationKey(patientEmailKey)) {
             NotificationOutbox patientEmailOutbox = NotificationOutbox.builder()
                     .eventId("rem-" + UUID.randomUUID())
                     .eventType(AppointmentEventType.APPOINTMENT_REMINDER_DUE.name())
@@ -202,8 +213,8 @@ public class AppointmentReminderScheduler {
         }
 
         // Enqueue Doctor In-App Reminder
-        String doctorInAppKey = "reminder:24h:" + appt.getId() + ":" + doctorUserId + ":IN_APP";
-        if (doctorUserId != null && !outboxRepository.existsByDeduplicationKey(doctorInAppKey)) {
+        String doctorInAppKey = "reminder:24h:" + appt.getId() + ":" + scheduleKey + ":" + doctorUserId + ":IN_APP";
+        if (doctorUserId != null && !doctorUserId.isBlank() && !outboxRepository.existsByDeduplicationKey(doctorInAppKey)) {
             NotificationOutbox doctorInApp = NotificationOutbox.builder()
                     .eventId("rem-" + UUID.randomUUID())
                     .eventType(AppointmentEventType.APPOINTMENT_REMINDER_DUE.name())
@@ -233,27 +244,31 @@ public class AppointmentReminderScheduler {
     }
 
     public Instant parseAppointmentStartInstant(String dateStr, String timeStr, ZoneId zoneId) {
-        if (dateStr == null || dateStr.isBlank()) return null;
+        if (dateStr == null || dateStr.isBlank() || timeStr == null || timeStr.isBlank()) {
+            return null; // Do not guess default time without explicit configuration
+        }
         try {
             LocalDate date = LocalDate.parse(dateStr.trim());
-            LocalTime time = LocalTime.of(9, 0); // default fallback if time string is empty
+            LocalTime time = null;
 
-            if (timeStr != null && !timeStr.isBlank()) {
-                boolean parsed = false;
-                for (DateTimeFormatter dtf : TIME_FORMATTERS) {
-                    try {
-                        time = LocalTime.parse(timeStr.trim().toUpperCase(Locale.ENGLISH), dtf);
-                        parsed = true;
-                        break;
-                    } catch (DateTimeParseException ignored) {
-                    }
+            for (DateTimeFormatter dtf : TIME_FORMATTERS) {
+                try {
+                    time = LocalTime.parse(timeStr.trim().toUpperCase(Locale.ENGLISH), dtf);
+                    break;
+                } catch (DateTimeParseException ignored) {
                 }
-                if (!parsed) {
-                    try {
-                        time = LocalTime.parse(timeStr.trim());
-                    } catch (Exception ignored) {
-                    }
+            }
+
+            if (time == null) {
+                try {
+                    time = LocalTime.parse(timeStr.trim());
+                } catch (Exception ignored) {
                 }
+            }
+
+            if (time == null) {
+                log.warn("Invalid appointment time format: date={}, time={}", dateStr, timeStr);
+                return null;
             }
 
             return ZonedDateTime.of(date, time, zoneId).toInstant();
@@ -284,11 +299,13 @@ public class AppointmentReminderScheduler {
 
     private String resolvePatientEmail(String patientId) {
         String userId = resolvePatientUserId(patientId);
+        if (userId == null) return null;
         return userRepository.findById(userId).map(User::getEmail).orElse(null);
     }
 
     private String resolvePatientName(String patientId) {
         String userId = resolvePatientUserId(patientId);
+        if (userId == null) return "Patient";
         return userRepository.findById(userId).map(User::getFullName)
                 .orElseGet(() -> patientRepository.findById(patientId).map(Patient::getFullName).orElse("Patient"));
     }
@@ -303,12 +320,14 @@ public class AppointmentReminderScheduler {
 
     private String resolveDoctorEmail(String doctorId) {
         String userId = resolveDoctorUserId(doctorId);
+        if (userId == null) return null;
         return userRepository.findById(userId).map(User::getEmail)
                 .orElseGet(() -> doctorRepository.findById(doctorId).map(Doctor::getEmail).orElse(null));
     }
 
     private String resolveDoctorName(String doctorId) {
         String userId = resolveDoctorUserId(doctorId);
+        if (userId == null) return "Doctor";
         return userRepository.findById(userId).map(User::getFullName)
                 .orElseGet(() -> doctorRepository.findById(doctorId).map(Doctor::getFullName).orElse("Doctor"));
     }

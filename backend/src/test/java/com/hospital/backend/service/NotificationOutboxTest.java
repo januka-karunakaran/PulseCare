@@ -2,19 +2,23 @@ package com.hospital.backend.service;
 
 import com.hospital.backend.enums.OutboxChannel;
 import com.hospital.backend.enums.OutboxStatus;
+import com.hospital.backend.model.Appointment;
 import com.hospital.backend.model.Notification;
 import com.hospital.backend.model.NotificationOutbox;
+import com.hospital.backend.repository.AppointmentRepository;
 import com.hospital.backend.repository.NotificationOutboxRepository;
 import com.hospital.backend.repository.NotificationRepository;
-import com.hospital.backend.service.impl.MailServiceImpl;
+import com.mongodb.client.result.UpdateResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -37,10 +41,16 @@ class NotificationOutboxTest {
     private NotificationRepository notificationRepository;
 
     @Mock
+    private AppointmentRepository appointmentRepository;
+
+    @Mock
+    private MongoTemplate mongoTemplate;
+
+    @Mock
     private SimpMessagingTemplate messagingTemplate;
 
     @Mock
-    private MailServiceImpl mailService;
+    private MailService mailService;
 
     @InjectMocks
     private OutboxProcessor outboxProcessor;
@@ -76,8 +86,11 @@ class NotificationOutboxTest {
                 .thenReturn(Optional.of(item))
                 .thenReturn(Optional.empty());
 
+        when(notificationRepository.findBySourceOutboxId("outbox-1")).thenReturn(Optional.empty());
+
         Notification savedNotification = Notification.builder()
                 .id("notif-1")
+                .sourceOutboxId("outbox-1")
                 .userId("user-patient-1")
                 .title("Appointment Confirmed")
                 .message("Your appointment is confirmed")
@@ -87,6 +100,8 @@ class NotificationOutboxTest {
                 .build();
 
         when(notificationRepository.save(any(Notification.class))).thenReturn(savedNotification);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(NotificationOutbox.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         int processed = outboxProcessor.processBatch(10);
 
@@ -95,8 +110,66 @@ class NotificationOutboxTest {
         assertThat(item.getDeliveredAt()).isNotNull();
 
         verify(notificationRepository).save(any(Notification.class));
-        verify(messagingTemplate, atLeastOnce()).convertAndSendToUser(eq("user-patient-1"), eq("/queue/notifications"), any());
-        verify(outboxRepository).save(item);
+        verify(messagingTemplate, atLeastOnce()).convertAndSendToUser(eq("patient@example.com"), eq("/queue/notifications"), any());
+    }
+
+    @Test
+    @DisplayName("Should idempotently handle in-app notification if already persisted on retry without duplicate creation")
+    void testDeliverInAppNotificationIdempotentWhenAlreadyPersisted() {
+        NotificationOutbox item = NotificationOutbox.builder()
+                .id("outbox-idempotent-1")
+                .channel(OutboxChannel.IN_APP)
+                .status(OutboxStatus.PROCESSING)
+                .recipientUserId("user-pat-10")
+                .recipientEmail("pat10@example.com")
+                .title("Idempotent Test")
+                .message("Message")
+                .build();
+
+        Notification alreadySaved = Notification.builder()
+                .id("notif-existing-10")
+                .sourceOutboxId("outbox-idempotent-1")
+                .userId("user-pat-10")
+                .isRead(true) // User already read this notification
+                .createdAt(LocalDateTime.now().minusHours(1))
+                .readAt(LocalDateTime.now().minusMinutes(30))
+                .build();
+
+        when(notificationRepository.findBySourceOutboxId("outbox-idempotent-1")).thenReturn(Optional.of(alreadySaved));
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(NotificationOutbox.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
+
+        outboxProcessor.processItem(item);
+
+        assertThat(item.getStatus()).isEqualTo(OutboxStatus.DELIVERED);
+        // CRITICAL: save must NEVER be called to avoid duplicate notifications and resetting isRead
+        verify(notificationRepository, never()).save(any(Notification.class));
+    }
+
+    @Test
+    @DisplayName("Should suppress and cancel reminder outbox item if appointment is cancelled in DB before dispatch")
+    void testProcessItemSuppressesReminderIfAppointmentCancelledInDatabase() {
+        NotificationOutbox item = NotificationOutbox.builder()
+                .id("outbox-rem-1")
+                .eventType("APPOINTMENT_REMINDER_DUE")
+                .aggregateId("appt-cancelled-99")
+                .channel(OutboxChannel.EMAIL)
+                .status(OutboxStatus.PROCESSING)
+                .recipientEmail("pat@example.com")
+                .build();
+
+        Appointment cancelledAppt = Appointment.builder()
+                .id("appt-cancelled-99")
+                .status("CANCELLED")
+                .build();
+
+        when(appointmentRepository.findById("appt-cancelled-99")).thenReturn(Optional.of(cancelledAppt));
+
+        outboxProcessor.processItem(item);
+
+        assertThat(item.getStatus()).isEqualTo(OutboxStatus.CANCELLED);
+        assertThat(item.getLastErrorCode()).isEqualTo("APPOINTMENT_INACTIVE");
+        verify(mailService, never()).sendAppointmentReminderToPatient(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -127,6 +200,8 @@ class NotificationOutboxTest {
         when(outboxRepository.claimNextEligible(anyString(), anyInt(), any(Instant.class)))
                 .thenReturn(Optional.of(item))
                 .thenReturn(Optional.empty());
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(NotificationOutbox.class)))
+                .thenReturn(UpdateResult.acknowledged(1, 1L, null));
 
         int processed = outboxProcessor.processBatch(5);
 
@@ -135,7 +210,6 @@ class NotificationOutboxTest {
         verify(mailService).sendAppointmentConfirmedToPatient(
                 eq("patient2@example.com"), eq("John Doe"), eq("Dr. Smith"), eq("2026-12-01"), eq("10:00 AM")
         );
-        verify(outboxRepository).save(item);
     }
 
     @Test
@@ -174,6 +248,7 @@ class NotificationOutboxTest {
                 .maxAttempts(5)
                 .build();
 
+        when(notificationRepository.findBySourceOutboxId("outbox-4")).thenReturn(Optional.empty());
         when(notificationRepository.save(any(Notification.class)))
                 .thenThrow(new RuntimeException("Transient DB timeout"));
 
@@ -198,6 +273,7 @@ class NotificationOutboxTest {
                 .maxAttempts(5)
                 .build();
 
+        when(notificationRepository.findBySourceOutboxId("outbox-5")).thenReturn(Optional.empty());
         when(notificationRepository.save(any(Notification.class)))
                 .thenThrow(new RuntimeException("Repeated database failure"));
 

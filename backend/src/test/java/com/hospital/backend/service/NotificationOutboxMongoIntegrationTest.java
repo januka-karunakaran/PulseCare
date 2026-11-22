@@ -2,8 +2,10 @@ package com.hospital.backend.service;
 
 import com.hospital.backend.enums.OutboxChannel;
 import com.hospital.backend.enums.OutboxStatus;
+import com.hospital.backend.model.Notification;
 import com.hospital.backend.model.NotificationOutbox;
 import com.hospital.backend.repository.NotificationOutboxRepository;
+import com.hospital.backend.repository.NotificationRepository;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -19,6 +21,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -28,7 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Enterprise Notification Outbox MongoDB Integration Test.
- * Tests atomic lease acquisition, lease recovery, concurrency contention, and deduplication
+ * Tests atomic lease acquisition, lease recovery, concurrency contention,
+ * in-app idempotency after worker crashes, and deduplication
  * using an isolated Testcontainers MongoDB instance.
  */
 @SpringBootTest
@@ -82,11 +86,18 @@ public class NotificationOutboxMongoIntegrationTest {
     private NotificationOutboxRepository outboxRepository;
 
     @Autowired
+    private NotificationRepository notificationRepository;
+
+    @Autowired
+    private OutboxProcessor outboxProcessor;
+
+    @Autowired
     private MongoTemplate mongoTemplate;
 
     @BeforeEach
     void cleanCollection() {
         mongoTemplate.remove(new Query(), NotificationOutbox.class);
+        mongoTemplate.remove(new Query(), Notification.class);
     }
 
     @Test
@@ -162,6 +173,62 @@ public class NotificationOutboxMongoIntegrationTest {
             assertThat(doc.getClaimedBy()).isNotNull();
             assertThat(doc.getClaimUntil()).isAfter(Instant.now());
         }
+    }
+
+    @Test
+    @DisplayName("Simulate worker crash after Notification save: retry must not create duplicate notification")
+    void testWorkerCrashAfterInAppPersistenceDoesNotCreateDuplicateNotificationOnRetry() {
+        Instant now = Instant.now();
+        String outboxId = "outbox-crash-" + UUID.randomUUID();
+
+        // 1. Outbox entry is in PROCESSING state with expired lease (simulating worker 1 died after saving Notification)
+        NotificationOutbox item = NotificationOutbox.builder()
+                .id(outboxId)
+                .eventId("evt-crash-1")
+                .eventType("APPOINTMENT_CONFIRMED")
+                .aggregateId("appt-crash-1")
+                .recipientUserId("patient-crash-user")
+                .channel(OutboxChannel.IN_APP)
+                .status(OutboxStatus.PROCESSING)
+                .claimedBy("crashed-worker-1")
+                .claimUntil(now.minusSeconds(10)) // expired lease
+                .attemptCount(1)
+                .maxAttempts(5)
+                .createdAt(now.minusSeconds(60))
+                .updatedAt(now.minusSeconds(10))
+                .deduplicationKey("test:crash:outbox:1")
+                .title("Confirmed Appointment")
+                .message("Your appointment is confirmed")
+                .build();
+        outboxRepository.save(item);
+
+        // 2. Pre-existing Notification that worker 1 persisted before crashing
+        Notification persistedBeforeCrash = Notification.builder()
+                .sourceOutboxId(outboxId)
+                .userId("patient-crash-user")
+                .title("Confirmed Appointment")
+                .message("Your appointment is confirmed")
+                .type("APPOINTMENT_CONFIRMED")
+                .isRead(true) // User already read it!
+                .createdAt(LocalDateTime.now().minusMinutes(2))
+                .readAt(LocalDateTime.now().minusMinutes(1))
+                .build();
+        notificationRepository.save(persistedBeforeCrash);
+
+        // 3. Worker 2 claims the item and runs processItem
+        Optional<NotificationOutbox> recoveredOpt = outboxRepository.claimNextEligible("worker-alive-2", 30, now);
+        assertThat(recoveredOpt).isPresent();
+
+        outboxProcessor.processItem(recoveredOpt.get());
+
+        // 4. Assertions: exactly ONE notification exists, read state preserved, outbox marked DELIVERED
+        List<Notification> notifications = notificationRepository.findByUserIdOrderByCreatedAtDesc("patient-crash-user");
+        assertThat(notifications).hasSize(1);
+        assertThat(notifications.get(0).getSourceOutboxId()).isEqualTo(outboxId);
+        assertThat(notifications.get(0).isRead()).isTrue(); // user read status not overwritten!
+
+        NotificationOutbox afterOutbox = outboxRepository.findById(outboxId).orElseThrow();
+        assertThat(afterOutbox.getStatus()).isEqualTo(OutboxStatus.DELIVERED);
     }
 
     @Test

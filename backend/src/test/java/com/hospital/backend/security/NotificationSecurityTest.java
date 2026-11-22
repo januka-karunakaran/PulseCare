@@ -1,10 +1,14 @@
 package com.hospital.backend.security;
 
+import com.hospital.backend.config.WebSocketConfig;
 import com.hospital.backend.controller.NotificationController;
 import com.hospital.backend.model.Notification;
+import com.hospital.backend.model.User;
 import com.hospital.backend.repository.NotificationRepository;
+import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.service.NotificationService;
 import com.hospital.backend.service.UserService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -13,9 +17,18 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.messaging.support.ChannelInterceptor;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 
+import java.security.Principal;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -36,10 +49,36 @@ class NotificationSecurityTest {
     private UserService userService;
 
     @Mock
+    private UserRepository userRepository;
+
+    @Mock
+    private JwtService jwtService;
+
+    @Mock
+    private CustomUserDetailsService customUserDetailsService;
+
+    @Mock
     private Authentication authentication;
+
+    @Mock
+    private MessageChannel messageChannel;
 
     @InjectMocks
     private NotificationController notificationController;
+
+    private ChannelInterceptor webSocketInterceptor;
+
+    @BeforeEach
+    void setUpWebSocket() {
+        WebSocketConfig webSocketConfig = new WebSocketConfig(jwtService, customUserDetailsService, userRepository);
+        this.webSocketInterceptor = (ChannelInterceptor) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                webSocketConfig, "createChannelInterceptor"
+        );
+    }
+
+    // ==========================================
+    // REST Access Control Tests
+    // ==========================================
 
     @Test
     @DisplayName("Should successfully delete notification when authenticated user is the owner")
@@ -107,5 +146,97 @@ class NotificationSecurityTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(notificationService).markAsRead("notif-6");
+    }
+
+    // ==========================================
+    // STOMP WebSocket Destination Security Tests
+    // ==========================================
+
+    @Test
+    @DisplayName("Authenticated user subscribing to canonical /user/queue/notifications should succeed")
+    void testWebSocketSubscribeCanonicalQueueSucceeds() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        accessor.setDestination("/user/queue/notifications");
+        Principal principal = new UsernamePasswordAuthenticationToken("patient@hospital.com", null, List.of());
+        accessor.setUser(principal);
+
+        Message<?> message = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+        Message<?> result = webSocketInterceptor.preSend(message, messageChannel);
+
+        assertThat(result).isNotNull();
+    }
+
+    @Test
+    @DisplayName("Unauthenticated user subscribing to /user/queue/notifications should be rejected")
+    void testWebSocketSubscribeUnauthenticatedThrowsAccessDenied() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        accessor.setDestination("/user/queue/notifications");
+        // No principal set
+
+        Message<?> message = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+        assertThatThrownBy(() -> webSocketInterceptor.preSend(message, messageChannel))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessageContaining("Authentication required");
+    }
+
+    @Test
+    @DisplayName("User subscribing to another user's private queue should be rejected")
+    void testWebSocketSubscribeAnotherUserQueueThrowsAccessDenied() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        accessor.setDestination("/user/victim@hospital.com/queue/notifications");
+        Principal principal = new UsernamePasswordAuthenticationToken("attacker@hospital.com", null, List.of());
+        accessor.setUser(principal);
+
+        when(userRepository.findByEmail("attacker@hospital.com")).thenReturn(Optional.of(User.builder().id("attacker-id").build()));
+
+        Message<?> message = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+        assertThatThrownBy(() -> webSocketInterceptor.preSend(message, messageChannel))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessageContaining("Unauthorized subscription to private user destination");
+    }
+
+    @Test
+    @DisplayName("Substring destination match attempts should be strictly rejected")
+    void testWebSocketSubscribeSubstringUserThrowsAccessDenied() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        // Attacker appends domain to spoof substring match
+        accessor.setDestination("/user/attacker@hospital.com.evil.com/queue/notifications");
+        Principal principal = new UsernamePasswordAuthenticationToken("attacker@hospital.com", null, List.of());
+        accessor.setUser(principal);
+
+        when(userRepository.findByEmail("attacker@hospital.com")).thenReturn(Optional.of(User.builder().id("attacker-id").build()));
+
+        Message<?> message = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+        assertThatThrownBy(() -> webSocketInterceptor.preSend(message, messageChannel))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessageContaining("Unauthorized subscription to private user destination");
+    }
+
+    @Test
+    @DisplayName("Client SEND to protected broker destination (/topic or /queue) should be rejected")
+    void testWebSocketClientSendToProtectedBrokerThrowsAccessDenied() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SEND);
+        accessor.setDestination("/topic/emergency-alerts");
+        Principal principal = new UsernamePasswordAuthenticationToken("patient@hospital.com", null, List.of());
+        accessor.setUser(principal);
+
+        Message<?> message = MessageBuilder.createMessage("Fake Emergency".getBytes(), accessor.getMessageHeaders());
+        assertThatThrownBy(() -> webSocketInterceptor.preSend(message, messageChannel))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessageContaining("Direct SEND to broker or private user destinations is forbidden");
+    }
+
+    @Test
+    @DisplayName("Client SEND to private user destination (/user/**) should be rejected")
+    void testWebSocketClientSendToUserDestinationThrowsAccessDenied() {
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SEND);
+        accessor.setDestination("/user/queue/notifications");
+        Principal principal = new UsernamePasswordAuthenticationToken("patient@hospital.com", null, List.of());
+        accessor.setUser(principal);
+
+        Message<?> message = MessageBuilder.createMessage("Fake Notification".getBytes(), accessor.getMessageHeaders());
+        assertThatThrownBy(() -> webSocketInterceptor.preSend(message, messageChannel))
+                .isInstanceOf(AccessDeniedException.class)
+                .hasMessageContaining("Direct SEND to broker or private user destinations is forbidden");
     }
 }
