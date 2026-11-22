@@ -48,6 +48,7 @@ class ClinicalAuthorizationTest {
 
     @BeforeEach
     void setUp() {
+        SecurityContextHolder.clearContext();
         doctorA = User.builder().id("doc-user-A").email("docA@hospital.org").role(Role.DOCTOR).fullName("Dr. A").build();
         doctorB = User.builder().id("doc-user-B").email("docB@hospital.org").role(Role.DOCTOR).fullName("Dr. B").build();
         patientA = User.builder().id("pat-user-A").email("patientA@email.com").role(Role.PATIENT).fullName("Patient A").build();
@@ -58,13 +59,16 @@ class ClinicalAuthorizationTest {
         patientDocA = Patient.builder().id("pat-rec-A").userId("pat-user-A").fullName("Patient A").build();
     }
 
-    private void authenticateAs(User user) {
-        Authentication auth = mock(Authentication.class);
-        lenient().when(auth.isAuthenticated()).thenReturn(true);
-        lenient().when(auth.getName()).thenReturn(user.getEmail());
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
 
-        SecurityContext context = mock(SecurityContext.class);
-        lenient().when(context.getAuthentication()).thenReturn(auth);
+    private void authenticateAs(User user) {
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken auth =
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(auth);
         SecurityContextHolder.setContext(context);
 
         lenient().when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));

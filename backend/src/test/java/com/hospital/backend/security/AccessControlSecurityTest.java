@@ -111,9 +111,11 @@ public class AccessControlSecurityTest {
     }
 
     private void authenticateAs(User user) {
+        org.springframework.security.core.context.SecurityContext context = SecurityContextHolder.createEmptyContext();
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
-        SecurityContextHolder.getContext().setAuthentication(auth);
+        context.setAuthentication(auth);
+        SecurityContextHolder.setContext(context);
         when(userRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
     }
 

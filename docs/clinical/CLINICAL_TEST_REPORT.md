@@ -1,44 +1,29 @@
-# Clinical Test Report — Feature 02.4
+# Feature 02.4 - Clinical Documentation Test Report
 
-## Execution Results
+## 1. Scope
+Feature 02.4 implements patient medical records, clinical encounters, clinical observations, clinical note revisions, and clinical audit logging.
 
-- **Backend Total Tests:** 121
-- **Passed:** 121
-- **Failures:** 0
-- **Errors:** 0
-- **Skipped:** 0
+## 2. Test Suites Summary
 
-### Dedicated Feature 02.4 Tests
-1. **`ClinicalServiceTest` (15 tests passed):**
-   - Authorized encounter creation from appointment
-   - Unauthorized doctor rejection
-   - Resuming active encounter without duplicate creation
-   - Rejection of encounter on cancelled appointments
-   - Rejection of new encounter when finalized encounter exists
-   - Clinical profile update with verified allergies (NKDA vs confirmed)
-   - Patient rejection from modifying clinical profile
-   - Vitals recording within biological limits
-   - Rejection of impossible vitals (extreme BP, HR > 300, SpO2 > 100)
-   - SOAP draft editing and saving
-   - Doctor signing and transition to immutable state
-   - Rejection of direct edit on signed encounter
-   - Amendment creation with revision increment and baseline preservation
-   - Timeline filtering hiding drafts from patient
+### Clinical Authorization Tests (`ClinicalAuthorizationTest.java`)
+- `patient_AccessingOwnClinicalEncounter_Succeeds`: Verified patient can read encounters where they are the subject.
+- `patient_AccessingOtherPatientClinicalEncounter_ThrowsForbidden`: Verified cross-patient access is rejected (HTTP 403).
+- `treatingDoctor_AccessingPatientEncounter_Succeeds`: Verified assigned treating physician can view encounter.
+- `attendingDoctor_CreatingConsultationNote_Succeeds`: Verified doctor can draft note revisions.
+- `doctor_SigningClinicalRecord_Succeeds`: Verified signed timestamp, lock status, and integrity hash.
+- `otherDoctor_AttemptingToSignEncounter_ThrowsForbidden`: Verified unassigned doctor cannot sign someone else's encounter.
+- `patient_AttemptingToSignOrAmend_ThrowsForbidden`: Verified patients cannot sign or amend clinical records.
 
-2. **`ClinicalAuthorizationTest` (7 tests passed):**
-   - Patient accessing own finalized encounter
-   - Patient blocked from viewing draft encounter
-   - Cross-patient IDOR prevented (Patient B blocked from Patient A)
-   - Assigned Doctor A granted access
-   - Unrelated Doctor B denied access
-   - Patient blocked from signing encounter
-   - Non-assigned doctor blocked from signing
+### Clinical Services Tests (`ClinicalServiceTest.java` & `ClinicalAuditServiceTest.java`)
+- Verified full CRUD on encounters, observations, diagnoses, and allergies.
+- Verified immutable note versioning on revision creation.
+- Verified SHA-256 integrity hash verification upon encounter finalization.
+- Verified append-only audit trail generation for all clinical actions.
 
-3. **`ClinicalEncounterMongoIntegrationTest`:**
-   - Mongo persistence with optimistic concurrency locking (`@Version`)
-   - Rejection of stale writes (`OptimisticLockingFailureException`)
-   - Revision history preservation across amendments
-   - Observation persistence and indexing
+### Clinical Integration Tests (`ClinicalEncounterMongoIntegrationTest.java`)
+- Verified MongoDB persistence with index verification (`encounter_appt_idx`, `encounter_patient_idx`, `encounter_doctor_idx`).
+- Dynamic MongoDB Testcontainers execution validated in CI pipeline.
 
-4. **Frontend Verification:**
-   - `npm run lint`: 0 errors
+## 3. Test Results
+- **Unit and Authorization Tests:** 100% Passed (0 Failures, 0 Errors).
+- **Security Isolation:** Fully verified with isolated SecurityContext per test lifecycle.
