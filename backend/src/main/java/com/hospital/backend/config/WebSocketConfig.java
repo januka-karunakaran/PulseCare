@@ -1,5 +1,7 @@
 package com.hospital.backend.config;
 
+import com.hospital.backend.model.User;
+import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.security.CustomUserDetailsService;
 import com.hospital.backend.security.JwtService;
 import lombok.RequiredArgsConstructor;
@@ -26,7 +28,6 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 
 import java.security.Principal;
 import java.util.Arrays;
-import java.util.List;
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -40,6 +41,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final JwtService jwtService;
     private final CustomUserDetailsService customUserDetailsService;
+    private final UserRepository userRepository;
 
     @Override
     public void configureMessageBroker(@NonNull MessageBrokerRegistry config) {
@@ -77,6 +79,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         authenticateConnect(accessor);
                     } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
                         authorizeSubscribe(accessor);
+                    } else if (StompCommand.SEND.equals(accessor.getCommand())) {
+                        authorizeSend(accessor);
                     }
                 }
                 return message;
@@ -122,11 +126,32 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     throw new AccessDeniedException("Authentication required to subscribe to private user queues");
                 }
                 String username = principal.getName();
-                // If destination targets another user specifically, verify permission
-                if (!destination.equals("/user/queue/notifications") && !destination.contains(username)) {
+                // Standard private queue destination is always permitted for authenticated user
+                if (destination.equals("/user/queue/notifications")) {
+                    return;
+                }
+                // Specific user destination (/user/{id}/queue/notifications) must match principal email or user ID
+                boolean isAuthorized = destination.contains(username);
+                if (!isAuthorized) {
+                    String userId = userRepository.findByEmail(username).map(User::getId).orElse(null);
+                    if (userId != null && destination.contains(userId)) {
+                        isAuthorized = true;
+                    }
+                }
+                if (!isAuthorized) {
                     log.warn("User {} attempted unauthorized subscription to {}", username, destination);
                     throw new AccessDeniedException("Unauthorized subscription to another user's queue");
                 }
+            }
+        }
+    }
+
+    private void authorizeSend(StompHeaderAccessor accessor) {
+        String destination = accessor.getDestination();
+        if (destination != null) {
+            if (destination.startsWith("/topic") || destination.startsWith("/queue")) {
+                log.warn("Unauthorized attempt by client to SEND directly to broker destination: {}", destination);
+                throw new AccessDeniedException("Direct SEND to broker destinations is forbidden");
             }
         }
     }

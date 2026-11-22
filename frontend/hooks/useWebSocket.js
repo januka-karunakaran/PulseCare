@@ -47,21 +47,16 @@ export function useWebSocket(token, userId) {
       client.onConnect = () => {
         setConnected(true);
 
-        // Subscribe to user private notification destination
+        // Subscribe to user private notification destination with deduplication
         client.subscribe("/user/queue/notifications", (message) => {
           try {
             const data = JSON.parse(message.body);
-            setNotifications((prev) => [data, ...prev]);
-          } catch (err) {
-            console.warn("Failed to parse incoming WebSocket notification:", err);
-          }
-        });
-
-        // Also subscribe to specific user queue for backward compatibility
-        client.subscribe(`/user/${userId}/queue/notifications`, (message) => {
-          try {
-            const data = JSON.parse(message.body);
-            setNotifications((prev) => [data, ...prev]);
+            setNotifications((prev) => {
+              if (data?.id && prev.some((item) => item.id === data.id)) {
+                return prev;
+              }
+              return [data, ...prev];
+            });
           } catch (err) {
             console.warn("Failed to parse incoming WebSocket notification:", err);
           }
