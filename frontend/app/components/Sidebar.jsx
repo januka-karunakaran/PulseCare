@@ -37,6 +37,7 @@ const adminLinks = [
   { href: "/admin/beds", label: "Bed Management", icon: <FaBed /> },
   { href: "/admin/billing", label: "Billing", icon: <FaMoneyBillWave /> },
   { href: "/admin/lab-tests", label: "Lab Catalog", icon: <FaFlask /> },
+  { href: "/pharmacy/dashboard", label: "Pharmacy Ops", icon: <FaPrescriptionBottleAlt /> },
   { section: "Account" },
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
@@ -62,6 +63,17 @@ const labLinks = [
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
 
+const pharmacistLinks = [
+  { section: "Overview" },
+  { href: "/pharmacy/dashboard", label: "Dashboard", icon: <FaHome /> },
+  { section: "Pharmacy Operations" },
+  { href: "/pharmacy/prescriptions", label: "Prescription Queue", icon: <FaPrescriptionBottleAlt /> },
+  { href: "/pharmacy/inventory", label: "Medicine Catalog", icon: <FaFileAlt /> },
+  { href: "/pharmacy/batches", label: "Batches & Stock", icon: <FaBed /> },
+  { section: "Account" },
+  { href: "/profile", label: "Profile", icon: <FaUserCog /> },
+];
+
 const patientLinks = [
   { section: "Overview" },
   { href: "/patient/dashboard", label: "Dashboard", icon: <FaHeartbeat /> },
@@ -81,6 +93,7 @@ export default function Sidebar() {
   if (role === "ADMIN") links = adminLinks;
   else if (role === "DOCTOR") links = doctorLinks;
   else if (role === "LAB_TECH") links = labLinks;
+  else if (role === "PHARMACIST") links = pharmacistLinks;
   else if (role === "PATIENT") links = patientLinks;
 
   const handleLogout = async () => {
@@ -98,7 +111,7 @@ export default function Sidebar() {
   };
 
   const brandLabel =
-    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : role === "LAB_TECH" ? "Laboratory Portal" : "Patient Portal";
+    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : role === "LAB_TECH" ? "Laboratory Portal" : role === "PHARMACIST" ? "Pharmacy Portal" : "Patient Portal";
 
   return (
     <aside className="sidebar">

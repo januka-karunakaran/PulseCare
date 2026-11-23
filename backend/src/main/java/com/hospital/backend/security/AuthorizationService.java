@@ -59,8 +59,8 @@ public class AuthorizationService {
         if (patientId == null) return false;
         User user = getCurrentUser();
 
-        // 1. Administrators have organizational access
-        if (user.getRole() == Role.ADMIN) {
+        // 1. Administrators and Pharmacists have organizational access
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST) {
             return true;
         }
 
@@ -411,5 +411,40 @@ public class AuthorizationService {
     public boolean canEnterLabResult() {
         User user = getCurrentUser();
         return user.getRole() == Role.LAB_TECH || user.getRole() == Role.DOCTOR || user.getRole() == Role.ADMIN;
+    }
+
+    public boolean canManagePharmacyCatalog() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST;
+    }
+
+    public boolean canManagePharmacyInventory() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST;
+    }
+
+    public boolean canDispenseMedication() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST;
+    }
+
+    public boolean canViewPharmacyQueue() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST;
+    }
+
+    public boolean canAccessDispense(String patientId, String doctorId) {
+        if (patientId == null) return false;
+        User user = getCurrentUser();
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.PHARMACIST) return true;
+        if (user.getRole() == Role.PATIENT) {
+            return isPatientOwner(user, patientId);
+        }
+        if (user.getRole() == Role.DOCTOR) {
+            Optional<Doctor> doc = doctorRepository.findByUserId(user.getId());
+            if (doc.isPresent() && doc.get().getId().equals(doctorId)) return true;
+            return hasDoctorPatientRelationship(user.getId(), patientId);
+        }
+        return false;
     }
 }

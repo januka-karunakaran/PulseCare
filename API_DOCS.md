@@ -134,3 +134,27 @@ This document describes the REST API endpoints provided by the Hospital Manageme
 | `GET` | `/api/lab/results/{id}` | Authenticated | Retrieves result details by ID |
 | `GET` | `/api/lab/patients/{patientId}/reports` | Patient / Doctor / Admin | Retrieves released laboratory reports for a patient |
 | `GET` | `/api/lab/results/{id}/pdf` | Authenticated | Downloads official PDF laboratory report with security headers |
+
+---
+
+## 💊 10. Pharmacy Inventory & Medication Dispensing (`/api/pharmacy`)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/pharmacy/medicines` | Authenticated | Paged search of medicine catalog |
+| `GET` | `/api/pharmacy/medicines/{id}` | Authenticated | Retrieves medicine details with total available stock |
+| `GET` | `/api/pharmacy/medicines/low-stock` | Pharmacist / Admin | Lists catalog medicines with stock at or below reorder level |
+| `POST` | `/api/pharmacy/medicines` | Pharmacist / Admin | Creates a new medicine entry in the catalog |
+| `PUT` | `/api/pharmacy/medicines/{id}` | Pharmacist / Admin | Updates medicine metadata and reorder threshold |
+| `DELETE` | `/api/pharmacy/medicines/{id}` | Pharmacist / Admin | Deactivates a medicine in the catalog |
+| `POST` | `/api/pharmacy/inventory/receive` | Pharmacist / Admin | Receives a stock batch lot with expiration and storage location |
+| `POST` | `/api/pharmacy/inventory/adjust` | Pharmacist / Admin | Adjusts batch available stock with audit reason code |
+| `GET` | `/api/pharmacy/medicines/{id}/batches` | Pharmacist / Admin | Lists all active batches for a specific medicine |
+| `GET` | `/api/pharmacy/batches/near-expiry` | Pharmacist / Admin | Identifies batches expiring within the specified days (default 30) |
+| `GET` | `/api/pharmacy/medicines/{id}/movements` | Pharmacist / Admin | Returns append-only stock movement audit ledger |
+| `GET` | `/api/pharmacy/queue` | Pharmacist / Admin | Retrieves pending prescription queue with stock availability status |
+| `GET` | `/api/pharmacy/queue/{prescriptionId}` | Pharmacist / Admin | Returns prescription queue item with line-item stock readiness |
+| `POST` | `/api/pharmacy/dispense` | Pharmacist / Admin | Atomically executes FEFO stock allocation and dispenses medication |
+| `POST` | `/api/pharmacy/reverse` | Pharmacist / Admin | Reverses a dispensation and moves stock to physical quarantine |
+| `GET` | `/api/pharmacy/dispense/{id}` | Authenticated | Retrieves details of a specific dispensation |
+| `GET` | `/api/pharmacy/patients/{patientId}/dispenses` | Authenticated | Retrieves medication dispensation history for a patient |

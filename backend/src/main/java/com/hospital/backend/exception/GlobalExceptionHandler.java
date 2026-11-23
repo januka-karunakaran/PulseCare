@@ -132,6 +132,20 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(InsufficientStockException.class)
+    public ResponseEntity<ErrorResponse> handleInsufficientStock(InsufficientStockException ex) {
+        log.warn("Insufficient pharmacy stock: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(InvalidVitalObservationException.class)
     public ResponseEntity<ErrorResponse> handleInvalidVital(InvalidVitalObservationException ex) {
         log.warn("Invalid vital observation: {} [{}]", ex.getMessage(), ex.getErrorCode());

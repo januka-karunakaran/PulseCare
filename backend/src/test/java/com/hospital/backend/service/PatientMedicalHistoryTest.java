@@ -32,6 +32,7 @@ class PatientMedicalHistoryTest {
     @Mock private AppointmentRepository appointmentRepository;
     @Mock private PrescriptionRepository prescriptionRepository;
     @Mock private LabResultRepository labResultRepository;
+    @Mock private com.hospital.backend.repository.PharmacyDispenseRepository pharmacyDispenseRepository;
     @Mock private UserRepository userRepository;
 
     @InjectMocks
