@@ -305,4 +305,102 @@ public class AuthorizationService {
         }
         return false;
     }
+
+    public boolean canAccessLabOrder(com.hospital.backend.model.LabOrder order) {
+        if (order == null) return false;
+        User user = getCurrentUser();
+
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.LAB_TECH) {
+            return true;
+        }
+
+        if (user.getRole() == Role.PATIENT) {
+            // Patient can only see their own order if not in DRAFT
+            if (order.getStatus() == com.hospital.backend.enums.LabOrderStatus.DRAFT) {
+                return false;
+            }
+            return isPatientOwner(user, order.getPatientId());
+        }
+
+        if (user.getRole() == Role.DOCTOR) {
+            return isDoctorOwner(user, order.getDoctorId()) ||
+                    hasDoctorPatientRelationship(user.getId(), order.getPatientId());
+        }
+
+        return false;
+    }
+
+    public void checkLabOrderAccess(com.hospital.backend.model.LabOrder order) {
+        if (order == null) {
+            throw new ResourceNotFoundException("Lab order not found");
+        }
+        if (!canAccessLabOrder(order)) {
+            log.warn("Unauthorized attempt to access lab order id: {} by user: {}", order.getId(), getCurrentUser().getEmail());
+            throw new AccessDeniedException("You are not authorized to access this laboratory order");
+        }
+    }
+
+    public boolean canCreateLabOrder(String doctorId, String patientId) {
+        User user = getCurrentUser();
+        if (user.getRole() == Role.ADMIN) return true;
+        if (user.getRole() == Role.DOCTOR) {
+            return isDoctorOwner(user, doctorId) || hasDoctorPatientRelationship(user.getId(), patientId);
+        }
+        return false;
+    }
+
+    public boolean canCancelLabOrder(com.hospital.backend.model.LabOrder order) {
+        if (order == null) return false;
+        User user = getCurrentUser();
+        if (user.getRole() == Role.ADMIN) return true;
+        if (user.getRole() == Role.DOCTOR) {
+            return isDoctorOwner(user, order.getDoctorId());
+        }
+        return false;
+    }
+
+    public boolean canAccessLabResult(com.hospital.backend.model.LabResult result) {
+        if (result == null) return false;
+        User user = getCurrentUser();
+
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.LAB_TECH) {
+            return true;
+        }
+
+        if (user.getRole() == Role.PATIENT) {
+            // Patients can ONLY view RELEASED results (or legacy records) for their own identity
+            if (result.getWorkflowStatus() != null &&
+                result.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
+                return false;
+            }
+            return isPatientOwner(user, result.getPatientId());
+        }
+
+        if (user.getRole() == Role.DOCTOR) {
+            return isDoctorOwner(user, result.getDoctorId()) ||
+                    hasDoctorPatientRelationship(user.getId(), result.getPatientId());
+        }
+
+        return false;
+    }
+
+    public void checkLabResultAccess(com.hospital.backend.model.LabResult result) {
+        if (result == null) {
+            throw new ResourceNotFoundException("Lab result not found");
+        }
+        if (!canAccessLabResult(result)) {
+            log.warn("Unauthorized attempt to access lab result id: {} by user: {}", result.getId(), getCurrentUser().getEmail());
+            throw new AccessDeniedException("You are not authorized to access this laboratory result");
+        }
+    }
+
+    public boolean canVerifyOrReleaseLabResult() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.DOCTOR || user.getRole() == Role.ADMIN;
+    }
+
+    public boolean canEnterLabResult() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.LAB_TECH || user.getRole() == Role.DOCTOR || user.getRole() == Role.ADMIN;
+    }
 }

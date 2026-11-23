@@ -22,6 +22,7 @@ public class SecurityConfig {
     private static final String ADMIN = "ADMIN";
     private static final String DOCTOR = "DOCTOR";
     private static final String PATIENT = "PATIENT";
+    private static final String LAB_TECH = "LAB_TECH";
 
     private final JwtAuthFilter jwtAuthFilter;
 
@@ -68,6 +69,23 @@ public class SecurityConfig {
 
                     // CLINICAL RECORDS & ENCOUNTERS
                     .requestMatchers("/api/clinical/**").hasAnyRole(ADMIN, DOCTOR, PATIENT)
+
+                    // LABORATORY INTEGRATION
+                    .requestMatchers(HttpMethod.GET, "/api/lab/tests/**").hasAnyRole(ADMIN, DOCTOR, LAB_TECH, PATIENT)
+                    .requestMatchers("/api/lab/tests/**").hasRole(ADMIN)
+
+                    .requestMatchers(HttpMethod.POST, "/api/lab/orders").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.POST, "/api/lab/orders/*/cancel").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.GET, "/api/lab/orders/**").hasAnyRole(ADMIN, DOCTOR, LAB_TECH, PATIENT)
+
+                    .requestMatchers("/api/lab/orders/*/specimens/**", "/api/lab/specimens/**").hasAnyRole(ADMIN, DOCTOR, LAB_TECH)
+
+                    .requestMatchers(HttpMethod.POST, "/api/lab/results/*/verify", "/api/lab/results/*/release").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.POST, "/api/lab/results/*/correct").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.POST, "/api/lab/orders/*/results", "/api/lab/results/*/draft", "/api/lab/results").hasAnyRole(ADMIN, DOCTOR, LAB_TECH)
+                    .requestMatchers(HttpMethod.PUT, "/api/lab/results/*/draft").hasAnyRole(ADMIN, DOCTOR, LAB_TECH)
+                    .requestMatchers(HttpMethod.GET, "/api/lab/results/**").hasAnyRole(ADMIN, DOCTOR, LAB_TECH, PATIENT)
+                    .requestMatchers(HttpMethod.GET, "/api/lab/patients/*/reports").hasAnyRole(ADMIN, DOCTOR, PATIENT)
 
                     .anyRequest().authenticated()
                 )
