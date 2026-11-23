@@ -18,7 +18,9 @@ import {
   FaHistory,
   FaLock,
   FaSave,
+  FaFlask,
 } from "react-icons/fa";
+import { getActiveLabTests, createLabOrder } from "@/services/labService";
 
 export default function ClinicalConsultationModal({ appointment, patient, onClose, onUpdated }) {
   const [loading, setLoading] = useState(true);
@@ -55,6 +57,13 @@ export default function ClinicalConsultationModal({ appointment, patient, onClos
   const [amendMode, setAmendMode] = useState(false);
   const [amendmentReason, setAmendmentReason] = useState("");
   const [confirmSignModal, setConfirmSignModal] = useState(false);
+
+  // Laboratory ordering state
+  const [catalogTests, setCatalogTests] = useState([]);
+  const [selectedLabCodes, setSelectedLabCodes] = useState([]);
+  const [labPriority, setLabPriority] = useState("ROUTINE");
+  const [labOrderSuccess, setLabOrderSuccess] = useState("");
+  const [orderingLab, setOrderingLab] = useState(false);
 
   const initEncounter = useCallback(async () => {
     if (!appointment?.id) return;
@@ -99,6 +108,14 @@ export default function ClinicalConsultationModal({ appointment, patient, onClos
         const prof = await getPatientProfile(appointment.patientId);
         setProfile(prof);
       }
+
+      // 3. Load active laboratory catalog
+      try {
+        const tests = await getActiveLabTests();
+        setCatalogTests(tests || []);
+      } catch {
+        // Non-blocking
+      }
     } catch (err) {
       setError(err.message || "Failed to load clinical encounter");
     } finally {
@@ -109,6 +126,30 @@ export default function ClinicalConsultationModal({ appointment, patient, onClos
   useEffect(() => {
     initEncounter();
   }, [initEncounter]);
+
+  const handleOrderLabTests = async (e) => {
+    e.preventDefault();
+    if (!selectedLabCodes.length || !appointment?.patientId) return;
+    try {
+      setOrderingLab(true);
+      setError("");
+      setLabOrderSuccess("");
+      await createLabOrder({
+        patientId: appointment.patientId,
+        encounterId: encounter?.id,
+        appointmentId: appointment.id,
+        testCodes: selectedLabCodes,
+        priority: labPriority,
+        clinicalNotes: "Requested during consultation for: " + (chiefComplaint || "Encounter"),
+      });
+      setLabOrderSuccess(`Successfully submitted laboratory order for ${selectedLabCodes.length} test(s).`);
+      setSelectedLabCodes([]);
+    } catch (err) {
+      setError(err.message || "Failed to submit laboratory order");
+    } finally {
+      setOrderingLab(false);
+    }
+  };
 
   const handleSaveVitals = async (e) => {
     e.preventDefault();
@@ -528,6 +569,79 @@ export default function ClinicalConsultationModal({ appointment, patient, onClos
                         className="w-full p-2 text-xs border rounded-lg dark:bg-slate-800 dark:border-slate-700"
                       />
                     </div>
+                  </div>
+
+                  {/* Laboratory Order Request */}
+                  <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                        <FaFlask className="text-blue-500" /> Integrated Laboratory Orders
+                      </span>
+                      {catalogTests.length > 0 && (
+                        <select
+                          disabled={isFinalized && !amendMode}
+                          value={labPriority}
+                          onChange={(e) => setLabPriority(e.target.value)}
+                          className="text-xs p-1 rounded border dark:bg-slate-800 dark:border-slate-700"
+                        >
+                          <option value="ROUTINE">Priority: ROUTINE</option>
+                          <option value="URGENT">Priority: URGENT</option>
+                          <option value="STAT">Priority: STAT</option>
+                        </select>
+                      )}
+                    </div>
+
+                    {labOrderSuccess && (
+                      <div className="mb-2 p-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 rounded text-xs">
+                        {labOrderSuccess}
+                      </div>
+                    )}
+
+                    {catalogTests.length === 0 ? (
+                      <p className="text-slate-400 text-xs italic">Laboratory catalog is being initialized.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-32 overflow-y-auto p-2 bg-slate-50 dark:bg-slate-800/40 rounded-lg border border-slate-200 dark:border-slate-800">
+                          {catalogTests.map((t) => {
+                            const isSelected = selectedLabCodes.includes(t.testCode);
+                            return (
+                              <button
+                                key={t.testCode}
+                                type="button"
+                                disabled={isFinalized && !amendMode}
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setSelectedLabCodes(selectedLabCodes.filter((c) => c !== t.testCode));
+                                  } else {
+                                    setSelectedLabCodes([...selectedLabCodes, t.testCode]);
+                                  }
+                                }}
+                                className={`text-left p-2 rounded text-xs border transition-all ${
+                                  isSelected
+                                    ? "bg-blue-50 dark:bg-blue-900/40 border-blue-500 font-bold text-blue-700 dark:text-blue-300"
+                                    : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
+                                }`}
+                              >
+                                <div className="font-semibold">{t.testCode}</div>
+                                <div className="text-[10px] text-slate-400 truncate">{t.testName}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {selectedLabCodes.length > 0 && (!isFinalized || amendMode) && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={handleOrderLabTests}
+                              disabled={orderingLab}
+                              className="btn btn-xs btn-primary flex items-center gap-1"
+                            >
+                              <FaFlask /> Order {selectedLabCodes.length} Selected Test(s)
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

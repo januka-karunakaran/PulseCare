@@ -16,6 +16,7 @@ import {
   FaUserCog,
   FaCalendarAlt,
   FaHeartbeat,
+  FaFlask,
 } from "react-icons/fa";
 import { clearSession, getRefreshToken, getRole } from "@/utils/auth";
 import { logoutUser } from "@/services/authService";
@@ -35,6 +36,7 @@ const adminLinks = [
   { href: "/admin/prescriptions", label: "Prescriptions", icon: <FaPrescriptionBottleAlt /> },
   { href: "/admin/beds", label: "Bed Management", icon: <FaBed /> },
   { href: "/admin/billing", label: "Billing", icon: <FaMoneyBillWave /> },
+  { href: "/admin/lab-tests", label: "Lab Catalog", icon: <FaFlask /> },
   { section: "Account" },
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
@@ -46,6 +48,16 @@ const doctorLinks = [
   { href: "/doctor/appointments", label: "Appointments", icon: <FaCalendarCheck /> },
   { href: "/doctor/prescriptions", label: "Prescriptions", icon: <FaPrescriptionBottleAlt /> },
   { href: "/doctor/availability", label: "Availability", icon: <FaCalendarAlt /> },
+  { href: "/lab/orders", label: "Lab Orders", icon: <FaFlask /> },
+  { section: "Account" },
+  { href: "/profile", label: "Profile", icon: <FaUserCog /> },
+];
+
+const labLinks = [
+  { section: "Overview" },
+  { href: "/lab/dashboard", label: "Dashboard", icon: <FaHome /> },
+  { section: "Laboratory" },
+  { href: "/lab/orders", label: "Work Queue", icon: <FaFlask /> },
   { section: "Account" },
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
@@ -68,6 +80,7 @@ export default function Sidebar() {
   let links = [];
   if (role === "ADMIN") links = adminLinks;
   else if (role === "DOCTOR") links = doctorLinks;
+  else if (role === "LAB_TECH") links = labLinks;
   else if (role === "PATIENT") links = patientLinks;
 
   const handleLogout = async () => {
@@ -85,7 +98,7 @@ export default function Sidebar() {
   };
 
   const brandLabel =
-    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : "Patient Portal";
+    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : role === "LAB_TECH" ? "Laboratory Portal" : "Patient Portal";
 
   return (
     <aside className="sidebar">

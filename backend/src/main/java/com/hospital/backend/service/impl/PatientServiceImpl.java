@@ -122,18 +122,29 @@ public class PatientServiceImpl implements PatientService {
                     .build());
         }
 
-        // Add Lab Results
+        // Add Lab Results (Only RELEASED or historical legacy results)
         List<com.hospital.backend.model.LabResult> labs = labResultRepository.findByPatientId(patientId);
         for (com.hospital.backend.model.LabResult lab : labs) {
-            User doctor = userRepository.findById(lab.getDoctorId()).orElse(null);
+            if (lab.getWorkflowStatus() != null && lab.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
+                continue; // Do not leak DRAFT, ENTERED, or VERIFIED (unreleased) results to patient history
+            }
+            User doctor = lab.getDoctorId() != null ? userRepository.findById(lab.getDoctorId()).orElse(null) : null;
+            String labDate = lab.getTestDate();
+            if (labDate == null && lab.getReleasedAt() != null) {
+                labDate = lab.getReleasedAt().toString().substring(0, 10);
+            } else if (labDate == null && lab.getCreatedAt() != null) {
+                labDate = lab.getCreatedAt().toString().substring(0, 10);
+            }
+            String displayResult = lab.getResultValue() != null ? lab.getResultValue() :
+                    (lab.getNumericValue() != null ? String.valueOf(lab.getNumericValue()) : (lab.getTextValue() != null ? lab.getTextValue() : "Completed"));
             timeline.add(MedicalRecordDTO.builder()
                     .id(lab.getId())
-                    .date(lab.getTestDate())
+                    .date(labDate != null ? labDate : "Unknown")
                     .type("LAB_RESULT")
                     .title(lab.getTestName())
-                    .description("Result: " + lab.getResultValue() + " " + (lab.getUnit() != null ? lab.getUnit() : ""))
-                    .doctorName(doctor != null ? doctor.getFullName() : "Unknown")
-                    .status(lab.getStatus())
+                    .description("Result: " + displayResult + " " + (lab.getUnit() != null ? lab.getUnit() : ""))
+                    .doctorName(doctor != null ? doctor.getFullName() : "Laboratory")
+                    .status(lab.getStatus() != null ? lab.getStatus() : (lab.getInterpretation() != null ? lab.getInterpretation().name() : "NORMAL"))
                     .build());
         }
 

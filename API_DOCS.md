@@ -102,3 +102,35 @@ This document describes the REST API endpoints provided by the Hospital Manageme
 | `GET` | `/api/clinical/patients/{id}/profile` | Patient / Doctor / Admin | Retrieves clinical profile (allergies, medical history) |
 | `PUT` | `/api/clinical/patients/{id}/profile` | Doctor / Admin | Updates clinician-verified medical profile and allergies |
 | `GET` | `/api/clinical/patients/{id}/timeline` | Patient / Doctor / Admin | Unified chronological medical timeline (encounters, vitals, Rx, labs) |
+
+
+---
+
+## 🧪 9. Laboratory & Diagnostic Ordering (`/api/lab`)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/lab/tests` | Authenticated | Lists all active laboratory catalog tests |
+| `GET` | `/api/lab/tests/search` | Authenticated | Paged search of laboratory catalog by code/name |
+| `GET` | `/api/lab/tests/{id}` | Authenticated | Retrieves laboratory test definition by ID |
+| `POST` | `/api/lab/tests` | Admin | Creates a new test definition in the catalog |
+| `PUT` | `/api/lab/tests/{id}` | Admin | Updates test parameters and reference ranges |
+| `DELETE` | `/api/lab/tests/{id}` | Admin | Deactivates a test definition (blocks new orders) |
+| `POST` | `/api/lab/orders` | Doctor / Admin | Places a diagnostic test order linked to patient and encounter |
+| `GET` | `/api/lab/orders` | Authenticated | Retrieves paged laboratory orders queue (filtered by user role) |
+| `GET` | `/api/lab/orders/{id}` | Authenticated | Retrieves order details, specimens, and released results |
+| `POST` | `/api/lab/orders/{id}/cancel` | Doctor / Admin | Cancels an order before results are released |
+| `GET` | `/api/lab/patients/{patientId}/orders` | Authenticated | Fetches laboratory orders for a patient |
+| `POST` | `/api/lab/orders/{orderId}/specimens` | Lab Tech / Doctor / Admin | Records specimen collection with unique accession number |
+| `GET` | `/api/lab/orders/{orderId}/specimens` | Authenticated | Retrieves all specimens collected for an order |
+| `PUT` | `/api/lab/specimens/{id}/receive` | Lab Tech / Doctor / Admin | Records specimen intake/receipt at the laboratory |
+| `PUT` | `/api/lab/specimens/{id}/reject` | Lab Tech / Doctor / Admin | Rejects compromised specimen with clinical justification |
+| `POST` | `/api/lab/orders/{orderId}/results` | Lab Tech / Doctor / Admin | Enters structured quantitative/qualitative result or saves draft |
+| `GET` | `/api/lab/orders/{orderId}/results` | Authenticated | Retrieves results for an order (released only for patients) |
+| `PUT` | `/api/lab/results/{id}/draft` | Lab Tech / Doctor / Admin | Updates draft result before submission |
+| `POST` | `/api/lab/results/{id}/verify` | Doctor / Admin | Clinician verifies validity of entered laboratory findings |
+| `POST` | `/api/lab/results/{id}/release` | Doctor / Admin | Officially releases verified report to patient medical record |
+| `POST` | `/api/lab/results/{id}/correct` | Doctor / Admin | Creates a traceable revision for previously released result |
+| `GET` | `/api/lab/results/{id}` | Authenticated | Retrieves result details by ID |
+| `GET` | `/api/lab/patients/{patientId}/reports` | Patient / Doctor / Admin | Retrieves released laboratory reports for a patient |
+| `GET` | `/api/lab/results/{id}/pdf` | Authenticated | Downloads official PDF laboratory report with security headers |
