@@ -9,7 +9,7 @@ import { getClinicalTimeline, getEncounterById } from "@/services/clinicalServic
 import { getMedicalHistory } from "@/services/patientDashboardService";
 import { getUser, getAccessToken } from "@/utils/auth";
 import { downloadLabReportPdf } from "@/services/labService";
-import { FaFileMedical, FaCalendarCheck, FaStethoscope, FaTimes, FaHeartbeat, FaLock, FaFilePdf, FaFlask } from "react-icons/fa";
+import { FaFileMedical, FaCalendarCheck, FaStethoscope, FaTimes, FaHeartbeat, FaLock, FaFilePdf, FaFlask, FaPrescriptionBottleAlt } from "react-icons/fa";
 
 export default function MedicalHistoryPage() {
   const user = getUser();
@@ -106,7 +106,7 @@ export default function MedicalHistoryPage() {
                   <div key={record.id} className={`relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active`}>
                     {/* Icon */}
                     <div className="flex items-center justify-center w-10 h-10 rounded-full border border-white dark:border-slate-800 bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 transition-all group-hover:scale-110 group-hover:bg-blue-600 group-hover:text-white z-10">
-                      {record.type === 'APPOINTMENT' ? <FaCalendarCheck /> : record.type === 'LAB_RESULT' ? <FaFlask /> : <FaFileMedical />}
+                      {record.type === 'APPOINTMENT' ? <FaCalendarCheck /> : record.type === 'LAB_RESULT' ? <FaFlask /> : record.type === 'MEDICATION_DISPENSED' ? <FaPrescriptionBottleAlt /> : <FaFileMedical />}
                     </div>
                     {/* Content Card */}
                     <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-all hover:border-blue-500/50">
@@ -116,6 +116,7 @@ export default function MedicalHistoryPage() {
                           record.type === 'APPOINTMENT' ? 'bg-amber-100 text-amber-700' :
                           record.type === 'CLINICAL_ENCOUNTER' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
                           record.type === 'LAB_RESULT' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' :
+                          record.type === 'MEDICATION_DISPENSED' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300' :
                           'bg-emerald-100 text-emerald-700'
                         }`}>
                           {record.type}

@@ -10,6 +10,7 @@ import com.hospital.backend.repository.AppointmentRepository;
 import com.hospital.backend.repository.PatientRepository;
 import com.hospital.backend.repository.PrescriptionRepository;
 import com.hospital.backend.repository.LabResultRepository;
+import com.hospital.backend.repository.PharmacyDispenseRepository;
 import com.hospital.backend.repository.UserRepository;
 import com.hospital.backend.service.PatientService;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,7 @@ public class PatientServiceImpl implements PatientService {
     private final AppointmentRepository appointmentRepository;
     private final PrescriptionRepository prescriptionRepository;
     private final LabResultRepository labResultRepository;
+    private final PharmacyDispenseRepository pharmacyDispenseRepository;
     private final UserRepository userRepository;
 
     @Override
@@ -146,6 +148,38 @@ public class PatientServiceImpl implements PatientService {
                     .doctorName(doctor != null ? doctor.getFullName() : "Laboratory")
                     .status(lab.getStatus() != null ? lab.getStatus() : (lab.getInterpretation() != null ? lab.getInterpretation().name() : "NORMAL"))
                     .build());
+        }
+
+        // Add Pharmacy Dispenses (ONLY DISPENSED or PARTIALLY_DISPENSED)
+        if (pharmacyDispenseRepository != null) {
+            List<com.hospital.backend.model.PharmacyDispense> dispenses = pharmacyDispenseRepository.findByPatientIdOrderByDispensedAtDesc(patientId);
+            if (dispenses != null) {
+                for (com.hospital.backend.model.PharmacyDispense disp : dispenses) {
+                    if (disp.getStatus() == com.hospital.backend.enums.DispenseStatus.CANCELLED ||
+                        disp.getStatus() == com.hospital.backend.enums.DispenseStatus.REVERSED) {
+                        continue;
+                    }
+                    String dispDate = disp.getDispensedAt() != null ? disp.getDispensedAt().toString().substring(0, 10) :
+                            (disp.getCreatedAt() != null ? disp.getCreatedAt().toString().substring(0, 10) : "Unknown");
+                    StringBuilder itemSummary = new StringBuilder();
+                    if (disp.getItems() != null) {
+                        for (com.hospital.backend.model.PharmacyDispense.DispenseLineItem item : disp.getItems()) {
+                            if (itemSummary.length() > 0) itemSummary.append(", ");
+                            itemSummary.append(item.getMedicineName() != null ? item.getMedicineName() : "Medicine")
+                                    .append(" (").append(item.getDispensedQuantity()).append(" ").append(item.getDispenseUnit() != null ? item.getDispenseUnit() : "units").append(")");
+                        }
+                    }
+                    timeline.add(MedicalRecordDTO.builder()
+                            .id(disp.getId())
+                            .date(dispDate)
+                            .type("MEDICATION_DISPENSED")
+                            .title("Dispensed Medication (" + disp.getDispenseNumber() + ")")
+                            .description(itemSummary.length() > 0 ? itemSummary.toString() : "Medications dispensed")
+                            .doctorName(disp.getPharmacistName() != null ? disp.getPharmacistName() : "Hospital Pharmacy")
+                            .status(disp.getStatus() != null ? disp.getStatus().name() : "DISPENSED")
+                            .build());
+                }
+            }
         }
 
         // Sort by date descending

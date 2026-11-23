@@ -23,6 +23,7 @@ public class SecurityConfig {
     private static final String DOCTOR = "DOCTOR";
     private static final String PATIENT = "PATIENT";
     private static final String LAB_TECH = "LAB_TECH";
+    private static final String PHARMACIST = "PHARMACIST";
 
     private final JwtAuthFilter jwtAuthFilter;
 
@@ -86,6 +87,17 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.PUT, "/api/lab/results/*/draft").hasAnyRole(ADMIN, DOCTOR, LAB_TECH)
                     .requestMatchers(HttpMethod.GET, "/api/lab/results/**").hasAnyRole(ADMIN, DOCTOR, LAB_TECH, PATIENT)
                     .requestMatchers(HttpMethod.GET, "/api/lab/patients/*/reports").hasAnyRole(ADMIN, DOCTOR, PATIENT)
+
+                    // PHARMACY & MEDICATION DISPENSING
+                    .requestMatchers(HttpMethod.GET, "/api/pharmacy/medicines/**").hasAnyRole(ADMIN, DOCTOR, PHARMACIST, PATIENT)
+                    .requestMatchers("/api/pharmacy/medicines/**").hasAnyRole(ADMIN, PHARMACIST)
+                    .requestMatchers("/api/pharmacy/inventory/**", "/api/pharmacy/batches/**").hasAnyRole(ADMIN, PHARMACIST)
+                    .requestMatchers("/api/pharmacy/queue/**").hasAnyRole(ADMIN, PHARMACIST)
+                    .requestMatchers(HttpMethod.POST, "/api/pharmacy/dispense").hasAnyRole(ADMIN, PHARMACIST)
+                    .requestMatchers(HttpMethod.POST, "/api/pharmacy/reverse").hasAnyRole(ADMIN, PHARMACIST)
+                    .requestMatchers(HttpMethod.GET, "/api/pharmacy/dispense/**").hasAnyRole(ADMIN, DOCTOR, PHARMACIST, PATIENT)
+                    .requestMatchers(HttpMethod.GET, "/api/pharmacy/patients/*/dispenses").hasAnyRole(ADMIN, DOCTOR, PHARMACIST, PATIENT)
+                    .requestMatchers("/api/pharmacy/movements/**").hasAnyRole(ADMIN, PHARMACIST)
 
                     .anyRequest().authenticated()
                 )
