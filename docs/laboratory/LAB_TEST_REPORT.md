@@ -1,10 +1,14 @@
 # Feature 02.5 - Laboratory Integration Test Report
 
 ## 1. Automated Test Execution Summary
-- **Total Backend Tests Executed:** 147
-- **Passed:** 147
+- **Total Backend Tests Executed:** 159
+- **Passed:** 159
 - **Failed:** 0
+- **Errors:** 0
 - **Skipped:** 0
+- **Execution Time:** ~19.0 seconds
+
+---
 
 ## 2. Test Groups
 
@@ -31,6 +35,12 @@
 - `D3: Verification and Release succeeds` — PASSED
 - `D4: Lab technician cannot verify or release results` — PASSED
 - `D5: Released result correction creates new revision and archives old` — PASSED
+- `D6: Verifying a DRAFT result directly is rejected (must be ENTERED first)` — PASSED
+- `D7: Enter result with null interpretation defaults to NOT_ASSESSED` — PASSED
+- `D8: Save result draft updates the same entity in-place without duplicate creation` — PASSED
+- `D9: Save draft on a non-draft result is rejected` — PASSED
+- `D10: getResultsForOrder verifies parent order ownership and filters unreleased results for patients` — PASSED
+- `D11: getResultsForOrder throws ResourceNotFoundException if order does not exist` — PASSED
 
 ### Test Group E - Security & Access Control (`LabAuthorizationSecurityTest.java`)
 - `E1: Patient A can access own released lab report` — PASSED
@@ -40,11 +50,25 @@
 - `E5: Doctor with clinical relationship can access lab order` — PASSED
 - `E6: Lab technician cannot sign doctor clinical encounters` — PASSED
 - `E7: Lab technician can enter results but cannot verify or release them` — PASSED
-- `E8: Doctor and Admin can verify and release results` — PASSED
+- `E8: Clinical verification strictly restricted to licensed physicians; Admin denied` — PASSED
+- `E9: Doctor and Admin can release verified results` — PASSED
+- `E10: Patient A can access own active lab order` — PASSED
+- `E11: Patient B accessing Patient A's order throws AccessDeniedException` — PASSED
+- `E12: Unrelated Doctor without patient relationship is denied access to lab order` — PASSED
+- `E13: Patient cannot access unverified legacy result with null workflowStatus` — PASSED
 
 ### Test Group F - Integration & PDF Generation (`LabServiceTest.java`)
 - `F1: Patient cannot download PDF for unreleased result` — PASSED
 - `F2: Authorized PDF download succeeds for released result` — PASSED
 
-### Test Group G - Full System Regression Suite
-- All authentication, concurrency, booking, search performance, notifications outbox, and clinical encounter tests: **100% Passed**.
+### Test Group G - Patient Medical History Privacy (`PatientMedicalHistoryTest.java`)
+- `G1: Patient history: Only RELEASED lab results appear; unverified and legacy null status excluded` — PASSED
+
+### Test Group H - Full System Regression Suite
+- Token Lifecycle Security (`TokenLifecycleSecurityTest.java`): 9 tests — PASSED
+- Appointment Concurrency (`AppointmentServiceTest.java`): 8 tests — PASSED
+- Bed Allocation Concurrency (`BedServiceTest.java`): 6 tests — PASSED
+- Clinical Encounter Records (`ClinicalServiceTest.java`): 15 tests — PASSED
+- Notification Outbox & Deduplication (`NotificationOutboxTest.java`): 8 tests — PASSED
+- Search Service Security & Performance (`SearchServiceTest.java`): 12 tests — PASSED
+- Application Context Bootstrapping (`BackendApplicationTests.java`): 1 test — PASSED

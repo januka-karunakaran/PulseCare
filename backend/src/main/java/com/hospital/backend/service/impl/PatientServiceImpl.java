@@ -122,11 +122,11 @@ public class PatientServiceImpl implements PatientService {
                     .build());
         }
 
-        // Add Lab Results (Only RELEASED or historical legacy results)
+        // Add Lab Results (Strict Clinical Verification: ONLY officially RELEASED results appear in patient medical record)
         List<com.hospital.backend.model.LabResult> labs = labResultRepository.findByPatientId(patientId);
         for (com.hospital.backend.model.LabResult lab : labs) {
-            if (lab.getWorkflowStatus() != null && lab.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
-                continue; // Do not leak DRAFT, ENTERED, or VERIFIED (unreleased) results to patient history
+            if (lab.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
+                continue; // Do not leak DRAFT, ENTERED, VERIFIED (unreleased) or unverified legacy results to patient history
             }
             User doctor = lab.getDoctorId() != null ? userRepository.findById(lab.getDoctorId()).orElse(null) : null;
             String labDate = lab.getTestDate();

@@ -1,6 +1,6 @@
 # Laboratory MongoDB Index & Schema Migration Plan
 
-## Indexes Created
+## 1. Indexes Created & Enforced
 
 ### 1. `lab_test_definitions`
 - Unique index on `testCode`: ensures catalog code uniqueness.
@@ -21,7 +21,12 @@
 - Compound index on `{'patientId': 1, 'releasedAt': -1}`: patient portal history indexing.
 - Compound index on `{'workflowStatus': 1, 'updatedAt': -1}`: verification queue indexing.
 
-## Legacy Compatibility & Migration Strategy
-- Existing records in `lab_results` retain all legacy fields (`status = NORMAL/ABNORMAL`, `testDate`, etc.).
-- Historical records with `workflowStatus == null` are treated as legacy historical entries. They are safely rendered in patient medical history without modification.
-- Under Feature 02.5, no automated bulk transformation is applied to historical documents, guaranteeing zero data corruption.
+---
+
+## 2. Legacy Privacy & Migration Policy
+
+### Policy Guidelines
+1. **Zero Automated Overwrite:** Existing records in `lab_results` with `workflowStatus == null` retain all historical data without destructive in-place migrations.
+2. **Patient Privacy Shield:** Legacy unverified results are strictly excluded from patient-visible medical history and APIs until reviewed and explicitly released by qualified clinical staff.
+3. **Clinical Review:** Doctors and administrators retain audit visibility into unverified legacy results for historical care continuity.
+4. **Non-Destructive Dry-Run Strategy:** Future backfill migrations must operate via dry-run audit reports before applying `workflowStatus = RELEASED` to historically confirmed records.

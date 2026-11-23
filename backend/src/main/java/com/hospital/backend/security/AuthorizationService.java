@@ -368,9 +368,8 @@ public class AuthorizationService {
         }
 
         if (user.getRole() == Role.PATIENT) {
-            // Patients can ONLY view RELEASED results (or legacy records) for their own identity
-            if (result.getWorkflowStatus() != null &&
-                result.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
+            // Patients can ONLY view explicitly RELEASED results for their own identity (unverified legacy records are strictly hidden)
+            if (result.getWorkflowStatus() != com.hospital.backend.enums.LabResultWorkflowStatus.RELEASED) {
                 return false;
             }
             return isPatientOwner(user, result.getPatientId());
@@ -394,9 +393,19 @@ public class AuthorizationService {
         }
     }
 
-    public boolean canVerifyOrReleaseLabResult() {
+    public boolean canVerifyLabResult() {
+        User user = getCurrentUser();
+        // Clinical verification requires qualified medical authority (physicians only; ADMIN is not automatically a clinician)
+        return user.getRole() == Role.DOCTOR;
+    }
+
+    public boolean canReleaseLabResult() {
         User user = getCurrentUser();
         return user.getRole() == Role.DOCTOR || user.getRole() == Role.ADMIN;
+    }
+
+    public boolean canVerifyOrReleaseLabResult() {
+        return canReleaseLabResult();
     }
 
     public boolean canEnterLabResult() {
