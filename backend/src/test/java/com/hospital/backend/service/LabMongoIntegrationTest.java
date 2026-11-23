@@ -10,31 +10,48 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest
-@Testcontainers
+@ActiveProfiles("test")
+@Testcontainers(disabledWithoutDocker = false)
 class LabMongoIntegrationTest {
 
+    private static final String ISOLATED_TEST_DB = "disposable_lab_" + UUID.randomUUID().toString().replace("-", "");
+
     @Container
-    static MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:6.0.4");
+    private static final MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
+
+    static {
+        try {
+            if (DockerClientFactory.instance().isDockerAvailable()) {
+                mongoDBContainer.start();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
 
     @DynamicPropertySource
-    static void setProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.mongodb.uri", mongoDBContainer::getReplicaSetUrl);
+    static void setMongoProperties(DynamicPropertyRegistry registry) {
+        if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
+            registry.add("spring.data.mongodb.uri", () -> mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB));
+        }
     }
 
     @Autowired private LabTestDefinitionRepository testDefinitionRepository;
@@ -45,10 +62,19 @@ class LabMongoIntegrationTest {
 
     @BeforeEach
     void cleanUp() {
-        testDefinitionRepository.deleteAll();
-        labOrderRepository.deleteAll();
-        labSpecimenRepository.deleteAll();
-        labResultRepository.deleteAll();
+        mongoTemplate.dropCollection(LabTestDefinition.class);
+        mongoTemplate.indexOps(LabTestDefinition.class).ensureIndex(
+                new Index().on("testCode", Sort.Direction.ASC).unique()
+        );
+        mongoTemplate.dropCollection(LabOrder.class);
+        mongoTemplate.indexOps(LabOrder.class).ensureIndex(
+                new Index().on("orderNumber", Sort.Direction.ASC).unique()
+        );
+        mongoTemplate.dropCollection(LabSpecimen.class);
+        mongoTemplate.indexOps(LabSpecimen.class).ensureIndex(
+                new Index().on("specimenNumber", Sort.Direction.ASC).unique()
+        );
+        mongoTemplate.dropCollection(LabResult.class);
     }
 
     @Test

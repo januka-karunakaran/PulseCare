@@ -188,12 +188,84 @@ class LabAuthorizationSecurityTest {
     }
 
     @Test
-    @DisplayName("E8: Doctor and Admin can verify and release results")
-    void doctorAndAdmin_CanVerifyOrRelease() {
+    @DisplayName("E8: Clinical verification strictly restricted to licensed physicians; Admin denied")
+    void doctorCanVerify_AdminCannotVerify() {
         authenticateAs(doctorA);
-        assertTrue(authorizationService.canVerifyOrReleaseLabResult());
+        assertTrue(authorizationService.canVerifyLabResult(), "Licensed physician must be permitted to verify clinical results");
 
         authenticateAs(admin);
-        assertTrue(authorizationService.canVerifyOrReleaseLabResult());
+        assertFalse(authorizationService.canVerifyLabResult(), "Administrator without medical credentials must NOT be permitted to verify clinical results");
+    }
+
+    @Test
+    @DisplayName("E9: Doctor and Admin can release verified results")
+    void doctorAndAdmin_CanRelease() {
+        authenticateAs(doctorA);
+        assertTrue(authorizationService.canReleaseLabResult());
+
+        authenticateAs(admin);
+        assertTrue(authorizationService.canReleaseLabResult());
+    }
+
+    @Test
+    @DisplayName("E10: Patient A can access own active lab order")
+    void patientA_AccessOwnLabOrder_Succeeds() {
+        authenticateAs(patientA);
+
+        LabOrder order = LabOrder.builder()
+                .id("ord-pat-a")
+                .patientId("pat-user-A")
+                .status(LabOrderStatus.ORDERED)
+                .build();
+
+        assertTrue(authorizationService.canAccessLabOrder(order));
+        assertDoesNotThrow(() -> authorizationService.checkLabOrderAccess(order));
+    }
+
+    @Test
+    @DisplayName("E11: Patient B accessing Patient A's order throws AccessDeniedException")
+    void patientB_AccessPatientAOrder_ThrowsAccessDenied() {
+        authenticateAs(patientB);
+
+        LabOrder order = LabOrder.builder()
+                .id("ord-pat-a")
+                .patientId("pat-user-A")
+                .status(LabOrderStatus.ORDERED)
+                .build();
+
+        assertFalse(authorizationService.canAccessLabOrder(order));
+        assertThrows(AccessDeniedException.class, () -> authorizationService.checkLabOrderAccess(order));
+    }
+
+    @Test
+    @DisplayName("E12: Unrelated Doctor without patient relationship is denied access to lab order")
+    void doctorB_UnrelatedDoctor_AccessPatientAOrder_ThrowsAccessDenied() {
+        authenticateAs(doctorB);
+
+        LabOrder order = LabOrder.builder()
+                .id("ord-pat-a")
+                .doctorId("doc-user-A")
+                .patientId("pat-user-A")
+                .status(LabOrderStatus.ORDERED)
+                .build();
+
+        assertFalse(authorizationService.canAccessLabOrder(order));
+        assertThrows(AccessDeniedException.class, () -> authorizationService.checkLabOrderAccess(order));
+    }
+
+    @Test
+    @DisplayName("E13: Patient cannot access unverified legacy result with null workflowStatus")
+    void patient_AccessLegacyNullStatusResult_ThrowsAccessDenied() {
+        authenticateAs(patientA);
+
+        LabResult legacyNull = LabResult.builder()
+                .id("res-legacy-null")
+                .patientId("pat-user-A")
+                .workflowStatus(null) // Unverified legacy record
+                .resultValue("14.2")
+                .build();
+
+        assertFalse(authorizationService.canAccessLabResult(legacyNull));
+        assertThrows(AccessDeniedException.class, () -> authorizationService.checkLabResultAccess(legacyNull));
     }
 }

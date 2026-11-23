@@ -169,10 +169,8 @@ public class LabServiceImpl implements LabService {
                     .build());
         }
 
-        // 5. Build order with unique order number
-        String orderNum = "ORD-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 4).toUpperCase();
+        // 5. Build order with high-entropy unique order number and collision retry
         LabOrder order = LabOrder.builder()
-                .orderNumber(orderNum)
                 .patientId(patientId)
                 .doctorId(doctorId)
                 .encounterId(request.getEncounterId())
@@ -187,7 +185,20 @@ public class LabServiceImpl implements LabService {
                 .updatedAt(Instant.now())
                 .build();
 
-        LabOrder saved = labOrderRepository.save(order);
+        LabOrder saved = null;
+        int orderAttempts = 0;
+        while (saved == null && orderAttempts < 3) {
+            orderAttempts++;
+            try {
+                order.setOrderNumber(generateOrderNumber());
+                saved = labOrderRepository.save(order);
+            } catch (org.springframework.dao.DuplicateKeyException dke) {
+                if (orderAttempts >= 3) {
+                    log.error("Collision on LabOrder number generation after 3 attempts: {}", dke.getMessage());
+                    throw dke;
+                }
+            }
+        }
 
         // 6. Clinical audit log
         auditService.audit(patientId, "LabOrder", saved.getId(), ClinicalAuditAction.LAB_ORDER_CREATED, "SUCCESS", null, "Ordered " + orderedItems.size() + " lab tests");
@@ -312,9 +323,7 @@ public class LabServiceImpl implements LabService {
             throw new BadRequestException("Cannot collect specimen for a cancelled laboratory order");
         }
 
-        String specNum = "SPEC-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 4).toUpperCase();
         LabSpecimen specimen = LabSpecimen.builder()
-                .specimenNumber(specNum)
                 .labOrderId(orderId)
                 .patientId(order.getPatientId())
                 .specimenType(request.getSpecimenType().trim())
@@ -326,7 +335,20 @@ public class LabServiceImpl implements LabService {
                 .updatedAt(Instant.now())
                 .build();
 
-        LabSpecimen saved = labSpecimenRepository.save(specimen);
+        LabSpecimen saved = null;
+        int specAttempts = 0;
+        while (saved == null && specAttempts < 3) {
+            specAttempts++;
+            try {
+                specimen.setSpecimenNumber(generateSpecimenNumber());
+                saved = labSpecimenRepository.save(specimen);
+            } catch (org.springframework.dao.DuplicateKeyException dke) {
+                if (specAttempts >= 3) {
+                    log.error("Collision on LabSpecimen number generation after 3 attempts: {}", dke.getMessage());
+                    throw dke;
+                }
+            }
+        }
 
         // Update order status to IN_PROGRESS
         if (order.getStatus() == LabOrderStatus.ORDERED || order.getStatus() == LabOrderStatus.COLLECTION_PENDING) {
@@ -335,7 +357,7 @@ public class LabServiceImpl implements LabService {
             labOrderRepository.save(order);
         }
 
-        auditService.audit(order.getPatientId(), "LabSpecimen", saved.getId(), ClinicalAuditAction.SPECIMEN_COLLECTED, "SUCCESS", null, "Collected specimen " + specNum);
+        auditService.audit(order.getPatientId(), "LabSpecimen", saved.getId(), ClinicalAuditAction.SPECIMEN_COLLECTED, "SUCCESS", null, "Collected specimen " + saved.getSpecimenNumber());
         return saved;
     }
 
@@ -448,7 +470,7 @@ public class LabServiceImpl implements LabService {
         result.setUnit(request.getUnit() != null ? request.getUnit() : matchingItem.getDefaultUnit());
         result.setReferenceRange(request.getReferenceRange() != null ? request.getReferenceRange() : matchingItem.getReferenceRange());
 
-        LabResultInterpretation interp = request.getInterpretation() != null ? request.getInterpretation() : LabResultInterpretation.NORMAL;
+        LabResultInterpretation interp = request.getInterpretation() != null ? request.getInterpretation() : LabResultInterpretation.NOT_ASSESSED;
         result.setInterpretation(interp);
         result.setStatus(interp.name()); // Legacy field synchronization
 
@@ -467,31 +489,77 @@ public class LabServiceImpl implements LabService {
     }
 
     @Override
+    @Transactional
     public LabResult saveResultDraft(String resultId, EnterLabResultRequest request) {
+        User currentUser = authz.getCurrentUser();
+        if (!authz.canEnterLabResult()) {
+            throw new AccessDeniedException("Only authorized laboratory technicians or clinicians can update draft laboratory results");
+        }
+
         LabResult result = labResultRepository.findById(resultId)
                 .orElseThrow(() -> new ResourceNotFoundException("Lab result not found: " + resultId));
 
         if (result.getWorkflowStatus() != LabResultWorkflowStatus.DRAFT) {
-            throw new BadRequestException("Can only update draft on results currently in DRAFT status");
+            throw new BadRequestException("Can only update draft on results currently in DRAFT status. Current status: " + result.getWorkflowStatus());
         }
 
-        request.setSaveAsDraft(true);
-        return enterResult(result.getLabOrderId(), request);
+        // Validate specimen if provided
+        if (request.getSpecimenId() != null && !request.getSpecimenId().isBlank()) {
+            LabSpecimen spec = labSpecimenRepository.findById(request.getSpecimenId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Specimen not found: " + request.getSpecimenId()));
+            if (spec.getCollectionStatus() == SpecimenStatus.REJECTED) {
+                throw new BadRequestException("Cannot record result against a REJECTED specimen");
+            }
+            result.setSpecimenId(request.getSpecimenId());
+        }
+
+        if (request.getResultType() != null) {
+            result.setResultType(request.getResultType().toUpperCase());
+        }
+        result.setNumericValue(request.getNumericValue());
+        result.setTextValue(request.getTextValue());
+        result.setResultValue(request.getNumericValue() != null ? String.valueOf(request.getNumericValue()) : request.getTextValue());
+        if (request.getUnit() != null) {
+            result.setUnit(request.getUnit());
+        }
+        if (request.getReferenceRange() != null) {
+            result.setReferenceRange(request.getReferenceRange());
+        }
+
+        LabResultInterpretation interp = request.getInterpretation() != null ? request.getInterpretation() : LabResultInterpretation.NOT_ASSESSED;
+        result.setInterpretation(interp);
+        result.setStatus(interp.name());
+
+        if (request.getNotes() != null) {
+            result.setNotes(request.getNotes());
+        }
+        result.setMeasuredAt(Instant.now());
+        result.setUpdatedAt(Instant.now());
+        // In-place update preserving original id, createdAt, enteredByUserId, and enteredAt
+
+        LabResult saved = labResultRepository.save(result);
+        auditService.audit(result.getPatientId(), "LabResult", saved.getId(), ClinicalAuditAction.LAB_RESULT_ENTERED, "SUCCESS", null,
+                "Updated DRAFT result for " + result.getTestCode());
+        return saved;
     }
 
     @Override
     public LabResult verifyResult(String resultId, VerifyLabResultRequest request) {
         User currentUser = authz.getCurrentUser();
-        if (!authz.canVerifyOrReleaseLabResult()) {
+        if (!authz.canVerifyLabResult()) {
             auditService.audit(null, "LabResult", resultId, ClinicalAuditAction.LAB_ACCESS_DENIED, "FAILURE", null, "Unauthorized verification attempt");
-            throw new AccessDeniedException("Only licensed physicians or authorized laboratory supervisors may verify clinical results");
+            throw new AccessDeniedException("Only licensed physicians may verify clinical laboratory results");
         }
 
         LabResult result = labResultRepository.findById(resultId)
                 .orElseThrow(() -> new ResourceNotFoundException("Lab result not found: " + resultId));
 
-        if (result.getWorkflowStatus() != LabResultWorkflowStatus.ENTERED && result.getWorkflowStatus() != LabResultWorkflowStatus.DRAFT) {
-            throw new BadRequestException("Cannot verify result in status: " + result.getWorkflowStatus());
+        if (result.getWorkflowStatus() == LabResultWorkflowStatus.DRAFT) {
+            throw new BadRequestException("Draft results cannot be verified directly. Technologist must submit result as ENTERED first.");
+        }
+
+        if (result.getWorkflowStatus() != LabResultWorkflowStatus.ENTERED) {
+            throw new BadRequestException("Cannot verify result in status: " + result.getWorkflowStatus() + ". Only ENTERED results can be verified.");
         }
 
         result.setWorkflowStatus(LabResultWorkflowStatus.VERIFIED);
@@ -511,7 +579,7 @@ public class LabServiceImpl implements LabService {
     @Override
     public LabResult releaseResult(String resultId) {
         User currentUser = authz.getCurrentUser();
-        if (!authz.canVerifyOrReleaseLabResult()) {
+        if (!authz.canReleaseLabResult()) {
             auditService.audit(null, "LabResult", resultId, ClinicalAuditAction.LAB_ACCESS_DENIED, "FAILURE", null, "Unauthorized release attempt");
             throw new AccessDeniedException("Only licensed clinicians or administrators may release laboratory results to patient records");
         }
@@ -572,9 +640,9 @@ public class LabServiceImpl implements LabService {
     @Override
     public LabResult correctResult(String resultId, CorrectLabResultRequest request) {
         User currentUser = authz.getCurrentUser();
-        if (!authz.canVerifyOrReleaseLabResult()) {
+        if (!authz.canVerifyLabResult()) {
             auditService.audit(null, "LabResult", resultId, ClinicalAuditAction.LAB_ACCESS_DENIED, "FAILURE", null, "Unauthorized correction attempt");
-            throw new AccessDeniedException("Only qualified clinicians may execute laboratory report corrections");
+            throw new AccessDeniedException("Only licensed physicians may execute laboratory report corrections");
         }
 
         LabResult original = labResultRepository.findById(resultId)
@@ -609,7 +677,7 @@ public class LabServiceImpl implements LabService {
                 .unit(request.getUnit() != null ? request.getUnit() : original.getUnit())
                 .referenceRange(request.getReferenceRange() != null ? request.getReferenceRange() : original.getReferenceRange())
                 .interpretation(interp)
-                .status(interp != null ? interp.name() : "NORMAL")
+                .status(interp != null ? interp.name() : "NOT_ASSESSED")
                 .workflowStatus(LabResultWorkflowStatus.ENTERED) // Requires re-verification and re-release!
                 .measuredAt(Instant.now())
                 .enteredByUserId(currentUser.getId())
@@ -632,6 +700,10 @@ public class LabServiceImpl implements LabService {
 
     @Override
     public List<LabResult> getResultsForOrder(String orderId) {
+        LabOrder order = labOrderRepository.findById(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Laboratory order not found: " + orderId));
+        authz.checkLabOrderAccess(order);
+
         User currentUser = authz.getCurrentUser();
         List<LabResult> results = labResultRepository.findByLabOrderId(orderId);
 
@@ -769,7 +841,15 @@ public class LabServiceImpl implements LabService {
 
             outboxRepository.save(inApp);
         } catch (Exception e) {
-            log.warn("Failed to publish outbox notification for {}: {}", aggregateId, e.getMessage());
+            log.warn("Failed to publish outbox notification for aggregate {}: {}. Event intent preserved for reconciliation.", aggregateId, e.getMessage());
         }
+    }
+
+    private String generateOrderNumber() {
+        return "ORD-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
+    }
+
+    private String generateSpecimenNumber() {
+        return "SPEC-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
     }
 }

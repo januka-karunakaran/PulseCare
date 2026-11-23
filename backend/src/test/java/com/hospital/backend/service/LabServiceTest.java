@@ -369,7 +369,7 @@ class LabServiceTest {
     @DisplayName("D2: Unverified release is rejected")
     void releaseResult_Unverified_ThrowsBadRequest() {
         when(authz.getCurrentUser()).thenReturn(doctorUser);
-        when(authz.canVerifyOrReleaseLabResult()).thenReturn(true);
+        when(authz.canReleaseLabResult()).thenReturn(true);
 
         LabResult result = LabResult.builder()
                 .id("res-1")
@@ -384,7 +384,8 @@ class LabServiceTest {
     @DisplayName("D3: Verification and Release succeeds")
     void verifyAndReleaseResult_Succeeds() {
         when(authz.getCurrentUser()).thenReturn(doctorUser);
-        when(authz.canVerifyOrReleaseLabResult()).thenReturn(true);
+        when(authz.canVerifyLabResult()).thenReturn(true);
+        when(authz.canReleaseLabResult()).thenReturn(true);
 
         LabResult result = LabResult.builder()
                 .id("res-1")
@@ -412,7 +413,8 @@ class LabServiceTest {
     @DisplayName("D4: Lab technician cannot verify or release results")
     void verifyResult_LabTech_ThrowsAccessDenied() {
         when(authz.getCurrentUser()).thenReturn(labTechUser);
-        when(authz.canVerifyOrReleaseLabResult()).thenReturn(false);
+        when(authz.canVerifyLabResult()).thenReturn(false);
+        when(authz.canReleaseLabResult()).thenReturn(false);
 
         assertThrows(AccessDeniedException.class, () -> labService.verifyResult("res-1", null));
         assertThrows(AccessDeniedException.class, () -> labService.releaseResult("res-1"));
@@ -422,7 +424,7 @@ class LabServiceTest {
     @DisplayName("D5: Released result correction creates new revision and archives old")
     void correctResult_CreatesNewRevision_Succeeds() {
         when(authz.getCurrentUser()).thenReturn(doctorUser);
-        when(authz.canVerifyOrReleaseLabResult()).thenReturn(true);
+        when(authz.canVerifyLabResult()).thenReturn(true);
 
         LabResult original = LabResult.builder()
                 .id("res-1")
@@ -458,6 +460,151 @@ class LabServiceTest {
         assertEquals(8.2, amended.getNumericValue());
         // New revision requires re-verification before release!
         assertEquals(LabResultWorkflowStatus.ENTERED, amended.getWorkflowStatus());
+    }
+
+    @Test
+    @DisplayName("D6: Verifying a DRAFT result directly is rejected (must be ENTERED first)")
+    void verifyResult_DraftResult_ThrowsBadRequest() {
+        when(authz.getCurrentUser()).thenReturn(doctorUser);
+        when(authz.canVerifyLabResult()).thenReturn(true);
+
+        LabResult draftResult = LabResult.builder()
+                .id("res-draft")
+                .workflowStatus(LabResultWorkflowStatus.DRAFT)
+                .build();
+        when(labResultRepository.findById("res-draft")).thenReturn(Optional.of(draftResult));
+
+        BadRequestException ex = assertThrows(BadRequestException.class, () -> labService.verifyResult("res-draft", null));
+        assertTrue(ex.getMessage().contains("Draft results cannot be verified directly"));
+    }
+
+    @Test
+    @DisplayName("D7: Enter result with null interpretation defaults to NOT_ASSESSED")
+    void enterResult_NullInterpretation_DefaultsToNotAssessed() {
+        when(authz.getCurrentUser()).thenReturn(labTechUser);
+        when(authz.canEnterLabResult()).thenReturn(true);
+
+        LabOrder order = LabOrder.builder()
+                .id("ord-1")
+                .patientId("pat-1")
+                .status(LabOrderStatus.IN_PROGRESS)
+                .orderedTests(List.of(LabOrder.OrderedTestItem.builder().testCode("GLUC").testName("Glucose").build()))
+                .build();
+        when(labOrderRepository.findById("ord-1")).thenReturn(Optional.of(order));
+        when(labResultRepository.findByLabOrderIdAndTestCode("ord-1", "GLUC")).thenReturn(Optional.empty());
+        when(labResultRepository.save(any(LabResult.class))).thenAnswer(i -> i.getArgument(0));
+
+        EnterLabResultRequest req = EnterLabResultRequest.builder()
+                .testCode("GLUC")
+                .resultType("NUMERIC")
+                .numericValue(110.0)
+                .interpretation(null) // Not specified
+                .build();
+
+        LabResult result = labService.enterResult("ord-1", req);
+        assertEquals(LabResultInterpretation.NOT_ASSESSED, result.getInterpretation());
+        assertEquals("NOT_ASSESSED", result.getStatus());
+    }
+
+    @Test
+    @DisplayName("D8: Save result draft updates the same entity in-place without duplicate creation")
+    void saveResultDraft_UpdatesSameEntityInPlace() {
+        when(authz.getCurrentUser()).thenReturn(labTechUser);
+        when(authz.canEnterLabResult()).thenReturn(true);
+
+        Instant originalCreatedAt = Instant.now().minusSeconds(3600);
+        LabResult existingDraft = LabResult.builder()
+                .id("res-draft-1")
+                .labOrderId("ord-1")
+                .patientId("pat-1")
+                .testCode("CBC")
+                .testName("Complete Blood Count")
+                .resultType("NUMERIC")
+                .numericValue(5.0)
+                .workflowStatus(LabResultWorkflowStatus.DRAFT)
+                .enteredByUserId("tech-user-1")
+                .createdAt(originalCreatedAt)
+                .build();
+
+        when(labResultRepository.findById("res-draft-1")).thenReturn(Optional.of(existingDraft));
+        when(labResultRepository.save(any(LabResult.class))).thenAnswer(i -> i.getArgument(0));
+
+        EnterLabResultRequest req = EnterLabResultRequest.builder()
+                .resultType("NUMERIC")
+                .numericValue(6.8)
+                .notes("Updated draft notes")
+                .build();
+
+        LabResult updated = labService.saveResultDraft("res-draft-1", req);
+
+        // Same ID preserved - no duplicate created!
+        assertEquals("res-draft-1", updated.getId());
+        assertEquals(6.8, updated.getNumericValue());
+        assertEquals(LabResultWorkflowStatus.DRAFT, updated.getWorkflowStatus());
+        assertEquals("Updated draft notes", updated.getNotes());
+        assertEquals(originalCreatedAt, updated.getCreatedAt());
+        assertEquals("tech-user-1", updated.getEnteredByUserId());
+    }
+
+    @Test
+    @DisplayName("D9: Save draft on a non-draft result is rejected")
+    void saveResultDraft_NonDraft_ThrowsBadRequest() {
+        when(authz.getCurrentUser()).thenReturn(labTechUser);
+        when(authz.canEnterLabResult()).thenReturn(true);
+
+        LabResult enteredResult = LabResult.builder()
+                .id("res-entered")
+                .workflowStatus(LabResultWorkflowStatus.ENTERED)
+                .build();
+        when(labResultRepository.findById("res-entered")).thenReturn(Optional.of(enteredResult));
+
+        assertThrows(BadRequestException.class, () -> labService.saveResultDraft("res-entered", new EnterLabResultRequest()));
+    }
+
+    @Test
+    @DisplayName("D10: getResultsForOrder verifies parent order ownership and filters unreleased results for patients")
+    void getResultsForOrder_VerifiesParentOrderOwnership_FiltersUnreleasedForPatient() {
+        LabOrder order = LabOrder.builder()
+                .id("ord-1")
+                .patientId("pat-user-1")
+                .doctorId("doc-user-1")
+                .status(LabOrderStatus.IN_PROGRESS)
+                .build();
+        when(labOrderRepository.findById("ord-1")).thenReturn(Optional.of(order));
+
+        LabResult released = LabResult.builder()
+                .id("res-rel")
+                .labOrderId("ord-1")
+                .testCode("CBC")
+                .workflowStatus(LabResultWorkflowStatus.RELEASED)
+                .build();
+        LabResult draft = LabResult.builder()
+                .id("res-drf")
+                .labOrderId("ord-1")
+                .testCode("GLUC")
+                .workflowStatus(LabResultWorkflowStatus.DRAFT)
+                .build();
+
+        when(labResultRepository.findByLabOrderId("ord-1")).thenReturn(List.of(released, draft));
+
+        // When caller is Patient
+        when(authz.getCurrentUser()).thenReturn(patientUser);
+        List<LabResult> patientResults = labService.getResultsForOrder("ord-1");
+        verify(authz).checkLabOrderAccess(order); // Order ownership checked!
+        assertEquals(1, patientResults.size());
+        assertEquals("res-rel", patientResults.get(0).getId());
+
+        // When caller is Doctor
+        when(authz.getCurrentUser()).thenReturn(doctorUser);
+        List<LabResult> doctorResults = labService.getResultsForOrder("ord-1");
+        assertEquals(2, doctorResults.size());
+    }
+
+    @Test
+    @DisplayName("D11: getResultsForOrder throws ResourceNotFoundException if order does not exist")
+    void getResultsForOrder_NotFound_ThrowsResourceNotFound() {
+        when(labOrderRepository.findById("ord-missing")).thenReturn(Optional.empty());
+        assertThrows(ResourceNotFoundException.class, () -> labService.getResultsForOrder("ord-missing"));
     }
 
     // =========================================================================
