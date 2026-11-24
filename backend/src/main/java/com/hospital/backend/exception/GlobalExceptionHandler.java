@@ -146,6 +146,48 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(error, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(PaymentConflictException.class)
+    public ResponseEntity<ErrorResponse> handlePaymentConflict(PaymentConflictException ex) {
+        log.warn("Payment conflict: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(OverpaymentException.class)
+    public ResponseEntity<ErrorResponse> handleOverpayment(OverpaymentException ex) {
+        log.warn("Overpayment rejected: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(InvoiceImmutableException.class)
+    public ResponseEntity<ErrorResponse> handleInvoiceImmutable(InvoiceImmutableException ex) {
+        log.warn("Invoice immutable: {} [{}]", ex.getMessage(), ex.getErrorCode());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.CONFLICT.value())
+                .error("Conflict")
+                .code(ex.getErrorCode())
+                .message(ex.getMessage())
+                .timestamp(Instant.now())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(InvalidVitalObservationException.class)
     public ResponseEntity<ErrorResponse> handleInvalidVital(InvalidVitalObservationException ex) {
         log.warn("Invalid vital observation: {} [{}]", ex.getMessage(), ex.getErrorCode());

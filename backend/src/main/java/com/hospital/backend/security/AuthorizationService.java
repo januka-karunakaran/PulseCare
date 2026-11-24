@@ -128,7 +128,7 @@ public class AuthorizationService {
         }
         User user = getCurrentUser();
 
-        if (user.getRole() == Role.ADMIN) {
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF) {
             return;
         }
 
@@ -154,7 +154,7 @@ public class AuthorizationService {
         }
         User user = getCurrentUser();
 
-        if (user.getRole() == Role.ADMIN) {
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF) {
             return;
         }
 
@@ -176,7 +176,7 @@ public class AuthorizationService {
         }
         User user = getCurrentUser();
 
-        if (user.getRole() == Role.ADMIN) {
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF) {
             return;
         }
 
@@ -198,7 +198,7 @@ public class AuthorizationService {
         }
         User user = getCurrentUser();
 
-        if (user.getRole() == Role.ADMIN) {
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF) {
             return;
         }
 
@@ -446,5 +446,40 @@ public class AuthorizationService {
             return hasDoctorPatientRelationship(user.getId(), patientId);
         }
         return false;
+    }
+
+    public boolean canManageBilling() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF;
+    }
+
+    public boolean canManageBillingCatalog() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF;
+    }
+
+    public boolean canRecordPayments() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF;
+    }
+
+    public boolean canProcessRefunds() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF;
+    }
+
+    public void checkPaymentAccess(com.hospital.backend.model.BillingPayment payment) {
+        if (payment == null) {
+            throw new ResourceNotFoundException("Payment not found");
+        }
+        User user = getCurrentUser();
+        if (user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF) {
+            return;
+        }
+        if (user.getRole() == Role.PATIENT && isPatientOwner(user, payment.getPatientId())) {
+            return;
+        }
+        log.warn("Unauthorized attempt to access payment id: {} by user: {}", payment.getId(), user.getEmail());
+        throw new AccessDeniedException("You are not authorized to access this payment record");
     }
 }

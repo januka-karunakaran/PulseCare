@@ -74,6 +74,17 @@ const pharmacistLinks = [
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
 
+const billingStaffLinks = [
+  { section: "Overview" },
+  { href: "/billing/dashboard", label: "Dashboard", icon: <FaHome /> },
+  { section: "Billing & Invoicing" },
+  { href: "/admin/billing", label: "Invoices & Payments", icon: <FaMoneyBillWave /> },
+  { href: "/billing/services", label: "Service Catalog", icon: <FaFileAlt /> },
+  { href: "/billing/reconciliation", label: "Reconciliation", icon: <FaCalendarAlt /> },
+  { section: "Account" },
+  { href: "/profile", label: "Profile", icon: <FaUserCog /> },
+];
+
 const patientLinks = [
   { section: "Overview" },
   { href: "/patient/dashboard", label: "Dashboard", icon: <FaHeartbeat /> },
@@ -81,6 +92,7 @@ const patientLinks = [
   { href: "/patient/appointments", label: "Book Appointment", icon: <FaCalendarCheck /> },
   { href: "/patient/my-appointments", label: "My Appointments", icon: <FaCalendarAlt /> },
   { href: "/patient/my-prescriptions", label: "My Prescriptions", icon: <FaPrescriptionBottleAlt /> },
+  { href: "/patient/billing", label: "My Bills & Payments", icon: <FaMoneyBillWave /> },
   { section: "Account" },
   { href: "/profile", label: "Profile", icon: <FaUserCog /> },
 ];
@@ -94,6 +106,7 @@ export default function Sidebar() {
   else if (role === "DOCTOR") links = doctorLinks;
   else if (role === "LAB_TECH") links = labLinks;
   else if (role === "PHARMACIST") links = pharmacistLinks;
+  else if (role === "BILLING_STAFF") links = billingStaffLinks;
   else if (role === "PATIENT") links = patientLinks;
 
   const handleLogout = async () => {
@@ -111,7 +124,17 @@ export default function Sidebar() {
   };
 
   const brandLabel =
-    role === "ADMIN" ? "Admin Panel" : role === "DOCTOR" ? "Doctor Portal" : role === "LAB_TECH" ? "Laboratory Portal" : role === "PHARMACIST" ? "Pharmacy Portal" : "Patient Portal";
+    role === "ADMIN"
+      ? "Admin Panel"
+      : role === "DOCTOR"
+      ? "Doctor Portal"
+      : role === "LAB_TECH"
+      ? "Laboratory Portal"
+      : role === "PHARMACIST"
+      ? "Pharmacy Portal"
+      : role === "BILLING_STAFF"
+      ? "Billing Portal"
+      : "Patient Portal";
 
   return (
     <aside className="sidebar">

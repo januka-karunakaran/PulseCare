@@ -158,3 +158,66 @@ This document describes the REST API endpoints provided by the Hospital Manageme
 | `POST` | `/api/pharmacy/reverse` | Pharmacist / Admin | Reverses a dispensation and moves stock to physical quarantine |
 | `GET` | `/api/pharmacy/dispense/{id}` | Authenticated | Retrieves details of a specific dispensation |
 | `GET` | `/api/pharmacy/patients/{patientId}/dispenses` | Authenticated | Retrieves medication dispensation history for a patient |
+
+
+---
+
+## 11. Hospital Billing, Invoicing & Payment Integrity API
+
+All monetary amounts are represented as decimal numbers with two fractional places (e.g., `150.00`). All endpoints require an active JWT bearer token.
+
+### 11.1 Service Catalog Management
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/billing/services` | `ADMIN`, `BILLING_STAFF` | Create a new billable service catalog item |
+| `PUT` | `/api/billing/services/{id}` | `ADMIN`, `BILLING_STAFF` | Update an existing catalog service tariff |
+| `DELETE` | `/api/billing/services/{id}` | `ADMIN`, `BILLING_STAFF` | Deactivate a catalog service from future billing |
+| `GET` | `/api/billing/services/{id}` | `ADMIN`, `BILLING_STAFF` | Get details of a single catalog service |
+| `GET` | `/api/billing/services` | `ADMIN`, `BILLING_STAFF` | List catalog services with pagination & category filter |
+| `GET` | `/api/billing/services/active` | `ADMIN`, `BILLING_STAFF`, `DOCTOR` | List all currently active catalog services |
+
+### 11.2 Billable Charge Registry
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/billing/charges` | `ADMIN`, `BILLING_STAFF` | Register a manual billable charge with audit rationale |
+| `GET` | `/api/billing/charges` | `ADMIN`, `BILLING_STAFF` | List uninvoiced charges for a patient |
+| `GET` | `/api/billing/charges/patient/{patientId}` | `ADMIN`, `BILLING_STAFF` | Paginated charge ledger for a patient |
+
+### 11.3 Invoicing & Statements
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/billing/invoices/draft` | `ADMIN`, `BILLING_STAFF` | Create draft invoice from uninvoiced charges |
+| `POST` | `/api/billing/invoices/{id}/issue` | `ADMIN`, `BILLING_STAFF` | Finalize and issue invoice to patient |
+| `POST` | `/api/billing/invoices/{id}/void` | `ADMIN`, `BILLING_STAFF` | Void unpaid invoice and release linked charges |
+| `GET` | `/api/billing/invoices/{id}` | `ADMIN`, `BILLING_STAFF`, `PATIENT` (Own) | Retrieve full invoice details |
+| `GET` | `/api/billing/invoices` | `ADMIN`, `BILLING_STAFF` | List invoices with status filtering |
+| `GET` | `/api/billing/invoices/{id}/pdf` | `ADMIN`, `BILLING_STAFF`, `PATIENT` (Own) | Download official PDF invoice statement |
+
+### 11.4 Payments & Collections
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/billing/invoices/{invoiceId}/payments` | `ADMIN`, `BILLING_STAFF` | Record payment against invoice with atomic concurrency |
+| `GET` | `/api/billing/payments/{id}` | `ADMIN`, `BILLING_STAFF`, `PATIENT` (Own) | Retrieve payment transaction receipt |
+| `GET` | `/api/billing/payments/{id}/receipt/pdf` | `ADMIN`, `BILLING_STAFF`, `PATIENT` (Own) | Download official PDF cashier receipt |
+| `GET` | `/api/billing/invoices/{invoiceId}/payments` | `ADMIN`, `BILLING_STAFF`, `PATIENT` (Own) | List payments allocated to an invoice |
+| `GET` | `/api/billing/invoices/{invoiceId}/ledger` | `ADMIN`, `BILLING_STAFF` | List audit ledger entries for an invoice |
+
+### 11.5 Refunds & Credit Notes
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/billing/payments/{paymentId}/refund` | `ADMIN`, `BILLING_STAFF` | Process verified payment refund |
+| `POST` | `/api/billing/credit-notes` | `ADMIN`, `BILLING_STAFF` | Issue credit note adjustment against an invoice |
+| `GET` | `/api/billing/invoices/{invoiceId}/refunds` | `ADMIN`, `BILLING_STAFF` | List refunds issued on an invoice |
+| `GET` | `/api/billing/invoices/{invoiceId}/credit-notes` | `ADMIN`, `BILLING_STAFF` | List credit notes applied to an invoice |
+
+### 11.6 Patient Portal Self-Service
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/billing/my-invoices` | `PATIENT` | List authenticated patient's issued and paid invoices |
+| `GET` | `/api/billing/my-payments` | `PATIENT` | List authenticated patient's payment receipts |
+
+### 11.7 Reconciliation & Executive Reporting
+| Method | Endpoint | Allowed Roles | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/billing/reports/summary` | `ADMIN`, `BILLING_STAFF` | Overall revenue KPIs, collections, outstanding balance |
+| `GET` | `/api/billing/reconciliation` | `ADMIN`, `BILLING_STAFF` | Daily financial closing and payment method audit report |
