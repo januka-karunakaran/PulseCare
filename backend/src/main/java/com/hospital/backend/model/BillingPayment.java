@@ -12,8 +12,11 @@ import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.mapping.Field;
+import org.springframework.data.mongodb.core.mapping.FieldType;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 
 @Document(collection = "billing_payments")
@@ -38,7 +41,15 @@ public class BillingPayment {
 
     private String patientId;
 
+    @Field(targetType = FieldType.DECIMAL128)
     private BigDecimal amount;
+
+    @Field(targetType = FieldType.DECIMAL128)
+    @Builder.Default
+    private BigDecimal refundedAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+
+    @Field(targetType = FieldType.DECIMAL128)
+    private BigDecimal refundableAmount;
 
     @Builder.Default
     private String currency = "LKR";

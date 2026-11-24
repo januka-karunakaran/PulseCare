@@ -1,7 +1,10 @@
 package com.hospital.backend.service;
 
+import com.hospital.backend.dto.billing.ProcessRefundRequest;
 import com.hospital.backend.dto.billing.RecordPaymentRequest;
 import com.hospital.backend.enums.*;
+import com.hospital.backend.exception.BadRequestException;
+import com.hospital.backend.exception.OverpaymentException;
 import com.hospital.backend.exception.PaymentConflictException;
 import com.hospital.backend.model.*;
 import com.hospital.backend.repository.*;
@@ -96,6 +99,12 @@ public class BillingConcurrencyMongoIntegrationTest {
     private BillingServiceCatalogRepository catalogRepository;
 
     @Autowired
+    private BillingLedgerEntryRepository ledgerEntryRepository;
+
+    @Autowired
+    private BillingRefundRepository refundRepository;
+
+    @Autowired
     private PatientRepository patientRepository;
 
     @Autowired
@@ -107,12 +116,26 @@ public class BillingConcurrencyMongoIntegrationTest {
     private User billingUser;
     private Patient patient;
 
+    private void setupSecurityContext() {
+        org.springframework.security.core.context.SecurityContext context =
+                org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken auth =
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        billingUser.getEmail(), null,
+                        List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_BILLING_STAFF"))
+                );
+        context.setAuthentication(auth);
+        org.springframework.security.core.context.SecurityContextHolder.setContext(context);
+    }
+
     @BeforeEach
     void setUp() {
         invoiceRepository.deleteAll();
         paymentRepository.deleteAll();
         chargeRepository.deleteAll();
         catalogRepository.deleteAll();
+        ledgerEntryRepository.deleteAll();
+        refundRepository.deleteAll();
         patientRepository.deleteAll();
         userRepository.deleteAll();
 
@@ -131,31 +154,31 @@ public class BillingConcurrencyMongoIntegrationTest {
                 .fullName("Alice Patient")
                 .build();
         patientRepository.save(patient);
+
+        setupSecurityContext();
     }
 
     @Test
-    @DisplayName("P0 - 20 Concurrent Threads Attempting $10 Payments on a $100 Outstanding Invoice")
-    void testConcurrentPayments_ZeroOverpayment_ZeroNegativeBalance() throws InterruptedException {
-        // Create an issued invoice with $100.00 outstanding balance
+    @DisplayName("TEST A: 20 concurrent requests each attempt $1.00 on a $10.00 invoice")
+    void testA_ConcurrentPayments_TenDollarsTotal_TwentyRequests() throws InterruptedException {
+        // Create an issued invoice with $10.00 outstanding balance
         Invoice invoice = Invoice.builder()
-                .invoiceNumber("INV-CONC-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .invoiceNumber("INV-A-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
                 .patientId(patient.getId())
                 .patientName(patient.getFullName())
                 .status(InvoiceStatus.ISSUED)
-                .subtotal(new BigDecimal("100.00"))
+                .subtotal(new BigDecimal("10.00"))
                 .discount(BigDecimal.ZERO)
                 .tax(BigDecimal.ZERO)
-                .totalAmount(new BigDecimal("100.00"))
+                .totalAmount(new BigDecimal("10.00"))
                 .paidAmount(new BigDecimal("0.00"))
-                .outstandingAmount(new BigDecimal("100.00"))
+                .outstandingAmount(new BigDecimal("10.00"))
                 .issuedAt(Instant.now())
                 .currency("USD")
                 .build();
         invoice = invoiceRepository.save(invoice);
         final String invoiceId = invoice.getId();
 
-        // 20 concurrent threads trying to pay $10.00 each simultaneously
-        // (Total attempted: $200.00, but only $100.00 is outstanding)
         int threadCount = 20;
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         CountDownLatch startGate = new CountDownLatch(1);
@@ -169,31 +192,20 @@ public class BillingConcurrencyMongoIntegrationTest {
             executor.submit(() -> {
                 try {
                     startGate.await();
-                    // Set up security context for thread
-                    org.springframework.security.core.context.SecurityContext context =
-                            org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-                    org.springframework.security.authentication.UsernamePasswordAuthenticationToken auth =
-                            new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                                    billingUser.getEmail(), null,
-                                    List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_BILLING_STAFF"))
-                            );
-                    context.setAuthentication(auth);
-                    org.springframework.security.core.context.SecurityContextHolder.setContext(context);
+                    setupSecurityContext();
 
                     RecordPaymentRequest req = RecordPaymentRequest.builder()
                             .invoiceId(invoiceId)
-                            .amount(new BigDecimal("10.00"))
+                            .amount(new BigDecimal("1.00"))
                             .method(PaymentMethod.CASH)
-                            .externalReference("TXN-" + index)
+                            .externalReference("TXN-A-" + index)
                             .build();
 
                     billingService.recordPayment(req);
                     successCount.incrementAndGet();
-                } catch (PaymentConflictException | com.hospital.backend.exception.OverpaymentException e) {
+                } catch (PaymentConflictException | OverpaymentException e) {
                     conflictCount.incrementAndGet();
                 } catch (Exception e) {
-                    System.err.println("Thread " + index + " failed with: " + e.getClass().getName() + ": " + e.getMessage());
-                    e.printStackTrace();
                     conflictCount.incrementAndGet();
                 } finally {
                     endGate.countDown();
@@ -201,23 +213,283 @@ public class BillingConcurrencyMongoIntegrationTest {
             });
         }
 
-        // Release the latch to start all threads simultaneously
         startGate.countDown();
         boolean completed = endGate.await(30, TimeUnit.SECONDS);
         executor.shutdown();
 
         assertTrue(completed, "All threads should complete within 30 seconds");
 
-        // Verify results: exactly 10 payments should succeed ($100 / $10 = 10)
-        assertEquals(10, successCount.get(), "Exactly 10 payments of $10.00 must succeed");
-        assertEquals(10, conflictCount.get(), "Exactly 10 payments must be rejected due to conflict or overpayment");
+        // Verify TEST A requirements:
+        // - Exactly 10 payments succeed ($10 / $1 = 10)
+        assertEquals(10, successCount.get(), "Exactly 10 payments of $1.00 must succeed");
+        assertEquals(10, conflictCount.get(), "Exactly 10 payments must be rejected");
 
         // Reload invoice from MongoDB
         Invoice finalInvoice = invoiceRepository.findById(invoiceId).orElseThrow();
         assertEquals(InvoiceStatus.PAID, finalInvoice.getStatus(), "Invoice must be marked PAID");
-        assertEquals(new BigDecimal("100.00"), finalInvoice.getPaidAmount().setScale(2), "Total paid must be exactly 100.00");
+        assertEquals(new BigDecimal("10.00"), finalInvoice.getPaidAmount().setScale(2), "Total confirmed paid must be exactly 10.00");
         assertEquals(new BigDecimal("0.00"), finalInvoice.getOutstandingAmount().setScale(2), "Outstanding must be exactly 0.00");
         assertTrue(finalInvoice.getOutstandingAmount().compareTo(BigDecimal.ZERO) >= 0, "Outstanding balance must NEVER be negative");
+
+        // Exactly 10 committed payment ledger entries
+        List<BillingLedgerEntry> ledgers = ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoiceId);
+        assertEquals(10, ledgers.size(), "Exactly 10 payment ledger entries must be committed");
+    }
+
+    @Test
+    @DisplayName("TEST B: Two concurrent payments $4.00 and $6.00 against $10.00 invoice")
+    void testB_ConcurrentPayments_FourAndSix_ZeroStaleOverwrite() throws InterruptedException {
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-B-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("10.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("10.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("10.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+        final String invoiceId = invoice.getId();
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch endGate = new CountDownLatch(2);
+
+        BigDecimal[] amounts = new BigDecimal[]{new BigDecimal("4.00"), new BigDecimal("6.00")};
+        for (int i = 0; i < 2; i++) {
+            final BigDecimal amt = amounts[i];
+            final int index = i;
+            executor.submit(() -> {
+                try {
+                    startGate.await();
+                    setupSecurityContext();
+                    RecordPaymentRequest req = RecordPaymentRequest.builder()
+                            .invoiceId(invoiceId)
+                            .amount(amt)
+                            .method(PaymentMethod.CASH)
+                            .externalReference("TXN-B-" + index)
+                            .build();
+                    billingService.recordPayment(req);
+                } catch (Exception e) {
+                    // unexpected error
+                } finally {
+                    endGate.countDown();
+                }
+            });
+        }
+
+        startGate.countDown();
+        boolean completed = endGate.await(15, TimeUnit.SECONDS);
+        executor.shutdown();
+        assertTrue(completed);
+
+        Invoice finalInvoice = invoiceRepository.findById(invoiceId).orElseThrow();
+        assertEquals(InvoiceStatus.PAID, finalInvoice.getStatus(), "Invoice must be marked PAID");
+        assertEquals(new BigDecimal("10.00"), finalInvoice.getPaidAmount().setScale(2), "Total paid must be exactly 10.00");
+        assertEquals(new BigDecimal("0.00"), finalInvoice.getOutstandingAmount().setScale(2), "Outstanding must be 0.00");
+    }
+
+    @Test
+    @DisplayName("TEST C: Duplicate confirmation of same pending payment is idempotent")
+    void testC_DuplicateConfirmation_Idempotent() {
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-C-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("100.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("100.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("100.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+
+        BillingPayment payment = BillingPayment.builder()
+                .paymentNumber("PAY-C-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .invoiceId(invoice.getId())
+                .patientId(patient.getId())
+                .amount(new BigDecimal("25.00"))
+                .currency("USD")
+                .method(PaymentMethod.BANK_TRANSFER)
+                .status(PaymentStatus.PENDING)
+                .receivedAt(Instant.now())
+                .createdAt(Instant.now())
+                .build();
+        payment = paymentRepository.save(payment);
+
+        // First confirmation
+        BillingPayment firstConfirm = billingService.confirmPayment(payment.getId());
+        assertEquals(PaymentStatus.CONFIRMED, firstConfirm.getStatus());
+        Instant firstConfirmedAt = firstConfirm.getConfirmedAt();
+        assertNotNull(firstConfirmedAt);
+
+        Invoice afterFirst = invoiceRepository.findById(invoice.getId()).orElseThrow();
+        assertEquals(new BigDecimal("25.00"), afterFirst.getPaidAmount().setScale(2));
+        assertEquals(new BigDecimal("75.00"), afterFirst.getOutstandingAmount().setScale(2));
+        assertEquals(InvoiceStatus.PARTIALLY_PAID, afterFirst.getStatus());
+
+        List<BillingLedgerEntry> ledgersFirst = ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoice.getId());
+        assertEquals(1, ledgersFirst.size(), "Exactly 1 ledger entry created on first confirmation");
+
+        // Second confirmation (IDEMPOTENT)
+        BillingPayment secondConfirm = billingService.confirmPayment(payment.getId());
+        assertEquals(PaymentStatus.CONFIRMED, secondConfirm.getStatus());
+        assertEquals(firstConfirmedAt, secondConfirm.getConfirmedAt(), "Confirmed timestamp must not be overwritten");
+
+        Invoice afterSecond = invoiceRepository.findById(invoice.getId()).orElseThrow();
+        assertEquals(new BigDecimal("25.00"), afterSecond.getPaidAmount().setScale(2), "Balance must NOT be debited twice");
+        assertEquals(new BigDecimal("75.00"), afterSecond.getOutstandingAmount().setScale(2));
+
+        List<BillingLedgerEntry> ledgersSecond = ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoice.getId());
+        assertEquals(1, ledgersSecond.size(), "Ledger count must remain exactly 1 (no duplicate ledger entries)");
+    }
+
+    @Test
+    @DisplayName("TEST D: Payment transaction rejection leaves invoice balance unchanged")
+    void testD_PaymentRejection_LeavesInvoiceBalanceUnchanged() {
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-D-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("10.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("10.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("10.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+
+        RecordPaymentRequest overpayReq = RecordPaymentRequest.builder()
+                .invoiceId(invoice.getId())
+                .amount(new BigDecimal("15.00")) // Exceeds 10.00 balance
+                .method(PaymentMethod.CASH)
+                .build();
+
+        assertThrows(OverpaymentException.class, () -> billingService.recordPayment(overpayReq));
+
+        Invoice reloaded = invoiceRepository.findById(invoice.getId()).orElseThrow();
+        assertEquals(new BigDecimal("0.00"), reloaded.getPaidAmount().setScale(2), "Paid amount must remain 0.00");
+        assertEquals(new BigDecimal("10.00"), reloaded.getOutstandingAmount().setScale(2), "Outstanding amount must remain 10.00");
+        assertEquals(InvoiceStatus.ISSUED, reloaded.getStatus(), "Status must remain ISSUED");
+        assertEquals(0, ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoice.getId()).size(), "No ledger entries");
+    }
+
+    @Test
+    @DisplayName("TEST E: Two concurrent refunds exceeding refundable balance prevent over-refund")
+    void testE_ConcurrentRefunds_PreventOverRefund() throws InterruptedException {
+        // Invoice $100, pay $50
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-E-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("100.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("100.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("100.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+
+        RecordPaymentRequest payReq = RecordPaymentRequest.builder()
+                .invoiceId(invoice.getId())
+                .amount(new BigDecimal("50.00"))
+                .method(PaymentMethod.CASH)
+                .build();
+        BillingPayment payment = billingService.recordPayment(payReq);
+        final String paymentId = payment.getId();
+
+        // 2 concurrent threads attempt $30.00 refund each (Total = $60.00, but only $50.00 paid)
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch endGate = new CountDownLatch(2);
+
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger rejectedCount = new AtomicInteger(0);
+
+        for (int i = 0; i < 2; i++) {
+            final int index = i;
+            executor.submit(() -> {
+                try {
+                    startGate.await();
+                    setupSecurityContext();
+                    ProcessRefundRequest req = ProcessRefundRequest.builder()
+                            .paymentId(paymentId)
+                            .amount(new BigDecimal("30.00"))
+                            .reasonCode("PATIENT_REQUEST")
+                            .externalReference("REF-EXT-" + index)
+                            .build();
+                    billingService.processRefund(req);
+                    successCount.incrementAndGet();
+                } catch (Exception e) {
+                    rejectedCount.incrementAndGet();
+                } finally {
+                    endGate.countDown();
+                }
+            });
+        }
+
+        startGate.countDown();
+        boolean completed = endGate.await(15, TimeUnit.SECONDS);
+        executor.shutdown();
+        assertTrue(completed);
+
+        // Exactly 1 refund must succeed, the other rejected
+        assertEquals(1, successCount.get(), "At most one $30 refund can succeed on $50 payment");
+        assertEquals(1, rejectedCount.get(), "Second $30 refund must be rejected to prevent over-refund");
+
+        List<BillingRefund> refunds = refundRepository.findByPaymentId(paymentId);
+        assertEquals(1, refunds.size(), "Exactly 1 refund record must exist");
+        assertEquals(new BigDecimal("30.00"), refunds.get(0).getAmount().setScale(2));
+
+        // Invoice balance restored correctly ($50 - $30 = $20 net paid; outstanding = $80)
+        Invoice finalInvoice = invoiceRepository.findById(invoice.getId()).orElseThrow();
+        assertEquals(new BigDecimal("20.00"), finalInvoice.getPaidAmount().setScale(2));
+        assertEquals(new BigDecimal("80.00"), finalInvoice.getOutstandingAmount().setScale(2));
+    }
+
+    @Test
+    @DisplayName("TEST F: Legacy invoice amount types (Double/String) compatibility handling")
+    void testF_LegacyInvoiceTypeCompatibility() {
+        String legacyId = "inv-legacy-" + UUID.randomUUID().toString().substring(0, 8);
+        org.bson.Document rawDoc = new org.bson.Document()
+                .append("_id", legacyId)
+                .append("invoiceNumber", "INV-LEGACY-" + System.currentTimeMillis())
+                .append("patientId", patient.getId())
+                .append("patientName", "Legacy Patient")
+                .append("status", "ISSUED")
+                .append("subtotal", 100.0)
+                .append("discount", 0.0)
+                .append("tax", 0.0)
+                .append("totalAmount", 100.0)
+                .append("paidAmount", 0.0)
+                .append("outstandingAmount", 100.0)
+                .append("currency", "USD");
+
+        mongoTemplate.getCollection("invoices").insertOne(rawDoc);
+
+        Invoice loaded = invoiceRepository.findById(legacyId).orElseThrow();
+        assertNotNull(loaded);
+        assertEquals(InvoiceStatus.ISSUED, loaded.getStatus());
+        assertEquals(new BigDecimal("100.00"), loaded.getTotalAmount().setScale(2));
+        assertEquals(new BigDecimal("100.00"), loaded.getOutstandingAmount().setScale(2));
+        assertEquals(new BigDecimal("0.00"), loaded.getPaidAmount().setScale(2));
     }
 
     @Test

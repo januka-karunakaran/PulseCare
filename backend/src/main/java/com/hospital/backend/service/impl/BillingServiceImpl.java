@@ -576,24 +576,9 @@ public class BillingServiceImpl implements BillingService {
                     "Concurrent balance update conflict on invoice " + invoice.getInvoiceNumber() + ". Please retry.");
         }
 
-        // Re-read invoice to verify state and set PAID or PARTIALLY_PAID atomically without optimistic lock collision
+        // Coordinate state transition without invoice status race
+        applyInvoiceStatusTransition(invoice.getId());
         Invoice updatedInvoice = invoiceRepository.findById(invoice.getId()).orElse(invoice);
-        if (updatedInvoice.getOutstandingAmount() != null &&
-            updatedInvoice.getOutstandingAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoice.getId())),
-                    new Update().set("status", InvoiceStatus.PAID),
-                    Invoice.class
-            );
-            updatedInvoice.setStatus(InvoiceStatus.PAID);
-        } else {
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoice.getId())),
-                    new Update().set("status", InvoiceStatus.PARTIALLY_PAID),
-                    Invoice.class
-            );
-            updatedInvoice.setStatus(InvoiceStatus.PARTIALLY_PAID);
-        }
 
         // 4. Create Confirmed Payment Record
         User currentUser = authz.getCurrentUser();
@@ -604,6 +589,8 @@ public class BillingServiceImpl implements BillingService {
                 .invoiceId(invoice.getId())
                 .patientId(invoice.getPatientId())
                 .amount(payAmount)
+                .refundableAmount(payAmount)
+                .refundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING))
                 .currency(invoice.getCurrency())
                 .method(request.getMethod())
                 .status(PaymentStatus.CONFIRMED)
@@ -656,17 +643,126 @@ public class BillingServiceImpl implements BillingService {
         return savedPayment;
     }
 
+    private InvoiceStatus applyInvoiceStatusTransition(String invoiceId) {
+        Invoice invoice = invoiceRepository.findById(invoiceId).orElse(null);
+        if (invoice == null) return null;
+
+        BigDecimal outstanding = invoice.getOutstandingAmount() != null ? invoice.getOutstandingAmount() : BigDecimal.ZERO;
+        org.bson.types.Decimal128 zeroDec = new org.bson.types.Decimal128(BigDecimal.ZERO);
+
+        if (outstanding.compareTo(BigDecimal.ZERO) <= 0) {
+            Query query = Query.query(Criteria.where("_id").is(invoiceId));
+            Update update = new Update().set("status", InvoiceStatus.PAID).set("updatedAt", Instant.now());
+            mongoTemplate.updateFirst(query, update, Invoice.class);
+            return InvoiceStatus.PAID;
+        } else {
+            // ONLY transition to PARTIALLY_PAID if current status is ISSUED. Never downgrade PAID to PARTIALLY_PAID!
+            Query query = Query.query(
+                    Criteria.where("_id").is(invoiceId)
+                            .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.ISSUED))
+                            .and("outstandingAmount").gt(zeroDec)
+            );
+            Update update = new Update().set("status", InvoiceStatus.PARTIALLY_PAID).set("updatedAt", Instant.now());
+            mongoTemplate.updateFirst(query, update, Invoice.class);
+            return InvoiceStatus.PARTIALLY_PAID;
+        }
+    }
+
     @Override
+    @Transactional
     public BillingPayment confirmPayment(String paymentId) {
         if (!authz.canRecordPayments()) {
             throw new AccessDeniedException("Only Billing Staff and Administrators can confirm payments");
         }
         BillingPayment payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found: " + paymentId));
-        payment.setStatus(PaymentStatus.CONFIRMED);
-        payment.setConfirmedAt(Instant.now());
-        payment.setConfirmedByUserId(authz.getCurrentUser().getId());
-        return paymentRepository.save(payment);
+
+        // Idempotency: if already confirmed, return without re-debiting balance or rewriting confirmedAt
+        if (payment.getStatus() == PaymentStatus.CONFIRMED) {
+            log.info("Payment {} is already CONFIRMED. Idempotent return.", payment.getPaymentNumber());
+            return payment;
+        }
+
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new BadRequestException("Only PENDING payments can be confirmed. Current status: " + payment.getStatus());
+        }
+
+        User currentUser = authz.getCurrentUser();
+        Invoice invoice = invoiceRepository.findById(payment.getInvoiceId())
+                .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + payment.getInvoiceId()));
+
+        if (invoice.getStatus() == InvoiceStatus.VOID) {
+            throw new BadRequestException("Cannot confirm payment on VOID invoice: " + invoice.getInvoiceNumber());
+        }
+
+        BigDecimal payAmount = payment.getAmount().setScale(2, ROUNDING);
+        org.bson.types.Decimal128 decPayAmount = new org.bson.types.Decimal128(payAmount);
+        org.bson.types.Decimal128 decNegPayAmount = new org.bson.types.Decimal128(payAmount.negate());
+
+        // Atomically deduct invoice balance
+        Query query = Query.query(
+                Criteria.where("_id").is(invoice.getId())
+                        .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.PARTIALLY_PAID.name(), InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID))
+                        .and("outstandingAmount").gte(decPayAmount)
+        );
+        Update update = new Update()
+                .inc("paidAmount", decPayAmount)
+                .inc("outstandingAmount", decNegPayAmount)
+                .set("paymentMethod", payment.getMethod())
+                .set("updatedAt", Instant.now());
+
+        UpdateResult result = mongoTemplate.updateFirst(query, update, Invoice.class);
+        if (result.getModifiedCount() == 0) {
+            throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
+                    "Invoice balance insufficient to confirm payment " + payment.getPaymentNumber());
+        }
+
+        // Atomically transition payment status PENDING -> CONFIRMED
+        Query payQuery = Query.query(Criteria.where("_id").is(payment.getId()).and("status").is(PaymentStatus.PENDING));
+        Update payUpdate = new Update()
+                .set("status", PaymentStatus.CONFIRMED)
+                .set("confirmedAt", Instant.now())
+                .set("confirmedByUserId", currentUser.getId())
+                .set("refundableAmount", decPayAmount)
+                .set("refundedAmount", new org.bson.types.Decimal128(BigDecimal.ZERO))
+                .set("updatedAt", Instant.now());
+
+        UpdateResult payRes = mongoTemplate.updateFirst(payQuery, payUpdate, BillingPayment.class);
+        if (payRes.getModifiedCount() == 0) {
+            // Rollback invoice deduction if payment was concurrently modified
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(invoice.getId())),
+                    new Update().inc("paidAmount", decNegPayAmount).inc("outstandingAmount", decPayAmount),
+                    Invoice.class
+            );
+            return paymentRepository.findById(payment.getId()).orElse(payment);
+        }
+
+        // Coordinate invoice state transition
+        applyInvoiceStatusTransition(invoice.getId());
+
+        // Create immutable ledger entry
+        BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
+                .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
+                .invoiceId(invoice.getId())
+                .paymentId(payment.getId())
+                .patientId(invoice.getPatientId())
+                .entryType(LedgerEntryType.PAYMENT)
+                .amount(payAmount)
+                .currency(invoice.getCurrency())
+                .referenceType("PAYMENT")
+                .referenceId(payment.getPaymentNumber())
+                .occurredAt(Instant.now())
+                .actorUserId(currentUser.getId())
+                .idempotencyKey(payment.getIdempotencyKey())
+                .build();
+        ledgerEntryRepository.save(ledgerEntry);
+
+        auditService.audit(invoice.getPatientId(), "BillingPayment", payment.getId(),
+                ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
+                "Confirmed payment " + payment.getPaymentNumber() + " of " + payAmount + " for invoice " + invoice.getInvoiceNumber());
+
+        return paymentRepository.findById(payment.getId()).orElseThrow();
     }
 
     @Override
@@ -715,23 +811,67 @@ public class BillingServiceImpl implements BillingService {
         BillingPayment payment = paymentRepository.findById(request.getPaymentId())
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found: " + request.getPaymentId()));
 
-        if (payment.getStatus() != PaymentStatus.CONFIRMED) {
-            throw new BadRequestException("Only CONFIRMED payments can be refunded");
+        if (payment.getStatus() != PaymentStatus.CONFIRMED && payment.getStatus() != PaymentStatus.PARTIALLY_REFUNDED) {
+            throw new BadRequestException("Only CONFIRMED or PARTIALLY_REFUNDED payments can be refunded");
         }
 
-        List<BillingRefund> existingRefunds = refundRepository.findByPaymentId(payment.getId());
-        BigDecimal totalRefunded = existingRefunds.stream()
-                .map(BillingRefund::getAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        BigDecimal maxRefundable = payment.getAmount().subtract(totalRefunded);
         BigDecimal refundAmount = request.getAmount().setScale(2, ROUNDING);
-
         if (refundAmount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("Refund amount must be greater than zero");
         }
-        if (refundAmount.compareTo(maxRefundable) > 0) {
-            throw new BadRequestException("Requested refund " + refundAmount + " exceeds refundable balance of " + maxRefundable);
+
+        // Initialize refundableAmount if not set on the document
+        if (payment.getRefundableAmount() == null) {
+            List<BillingRefund> existingRefunds = refundRepository.findByPaymentId(payment.getId());
+            BigDecimal alreadyRefunded = existingRefunds.stream()
+                    .map(BillingRefund::getAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal remainingRefundable = payment.getAmount().subtract(alreadyRefunded);
+
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(payment.getId()).and("refundableAmount").exists(false)),
+                    new Update()
+                            .set("refundableAmount", new org.bson.types.Decimal128(remainingRefundable))
+                            .set("refundedAmount", new org.bson.types.Decimal128(alreadyRefunded)),
+                    BillingPayment.class
+            );
+        }
+
+        org.bson.types.Decimal128 decRefund = new org.bson.types.Decimal128(refundAmount);
+        org.bson.types.Decimal128 decNegRefund = new org.bson.types.Decimal128(refundAmount.negate());
+
+        // Atomic conditional decrement on Payment refundableAmount (Step 5 Concurrency Protection)
+        Query refQuery = Query.query(
+                Criteria.where("_id").is(payment.getId())
+                        .and("status").in(List.of(PaymentStatus.CONFIRMED.name(), PaymentStatus.PARTIALLY_REFUNDED.name(), PaymentStatus.CONFIRMED, PaymentStatus.PARTIALLY_REFUNDED))
+                        .and("refundableAmount").gte(decRefund)
+        );
+        Update refUpdate = new Update()
+                .inc("refundableAmount", decNegRefund)
+                .inc("refundedAmount", decRefund)
+                .set("updatedAt", Instant.now());
+
+        UpdateResult refRes = mongoTemplate.updateFirst(refQuery, refUpdate, BillingPayment.class);
+        if (refRes.getModifiedCount() == 0) {
+            throw new PaymentConflictException("CONCURRENT_REFUND_CONFLICT",
+                    "Requested refund " + refundAmount + " exceeds available refundable balance or concurrent conflict occurred");
+        }
+
+        // Check if fully or partially refunded and update payment status
+        BillingPayment currentPayment = paymentRepository.findById(payment.getId()).orElse(payment);
+        if (currentPayment.getRefundableAmount() != null &&
+            currentPayment.getRefundableAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(payment.getId())),
+                    new Update().set("status", PaymentStatus.REFUNDED),
+                    BillingPayment.class
+            );
+        } else {
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(payment.getId())),
+                    new Update().set("status", PaymentStatus.PARTIALLY_REFUNDED),
+                    BillingPayment.class
+            );
         }
 
         User currentUser = authz.getCurrentUser();
@@ -768,15 +908,14 @@ public class BillingServiceImpl implements BillingService {
                 .build();
         ledgerEntryRepository.save(ledgerEntry);
 
-        // Update invoice balance
-        Invoice invoice = invoiceRepository.findById(payment.getInvoiceId()).orElseThrow();
-        invoice.setPaidAmount(invoice.getPaidAmount().subtract(refundAmount).setScale(2, ROUNDING));
-        invoice.setOutstandingAmount(invoice.getOutstandingAmount().add(refundAmount).setScale(2, ROUNDING));
-        if (invoice.getOutstandingAmount().compareTo(BigDecimal.ZERO) > 0) {
-            invoice.setStatus(InvoiceStatus.PARTIALLY_PAID);
-        }
-        invoice.setUpdatedAt(Instant.now());
-        invoiceRepository.save(invoice);
+        // Restore invoice outstanding balance atomically via MongoTemplate (no version conflict)
+        Query invRefQuery = Query.query(Criteria.where("_id").is(payment.getInvoiceId()));
+        Update invRefUpdate = new Update()
+                .inc("paidAmount", decNegRefund)
+                .inc("outstandingAmount", decRefund)
+                .set("status", InvoiceStatus.PARTIALLY_PAID)
+                .set("updatedAt", Instant.now());
+        mongoTemplate.updateFirst(invRefQuery, invRefUpdate, Invoice.class);
 
         // Update payment status if fully refunded
         if (totalRefunded.add(refundAmount).compareTo(payment.getAmount()) >= 0) {

@@ -362,6 +362,11 @@ class BillingServiceTest {
         when(paymentRepository.findById("pay-1")).thenReturn(Optional.of(payment));
         when(invoiceRepository.findById("inv-1")).thenReturn(Optional.of(invoice));
         when(refundRepository.findByPaymentId("pay-1")).thenReturn(List.of());
+        UpdateResult updateResult = mock(UpdateResult.class);
+        when(updateResult.getModifiedCount()).thenReturn(1L);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(BillingPayment.class))).thenReturn(updateResult);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(Invoice.class))).thenReturn(updateResult);
+
         when(refundRepository.save(any(BillingRefund.class))).thenAnswer(i -> {
             BillingRefund r = i.getArgument(0);
             r.setId("ref-1");
@@ -377,9 +382,7 @@ class BillingServiceTest {
         BillingRefund refund = billingService.processRefund(req);
         assertNotNull(refund);
         assertEquals(new BigDecimal("40.00"), refund.getAmount());
-        assertEquals(InvoiceStatus.PARTIALLY_PAID, invoice.getStatus());
-        assertEquals(new BigDecimal("40.00"), invoice.getOutstandingAmount());
-        assertEquals(new BigDecimal("60.00"), invoice.getPaidAmount());
+        verify(mongoTemplate).updateFirst(any(Query.class), any(Update.class), eq(Invoice.class));
         verify(ledgerEntryRepository).save(any(BillingLedgerEntry.class));
     }
 

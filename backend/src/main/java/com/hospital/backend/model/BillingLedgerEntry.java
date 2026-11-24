@@ -10,6 +10,8 @@ import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.mapping.Field;
+import org.springframework.data.mongodb.core.mapping.FieldType;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -40,6 +42,7 @@ public class BillingLedgerEntry {
 
     private LedgerEntryType entryType;
 
+    @Field(targetType = FieldType.DECIMAL128)
     private BigDecimal amount;
 
     @Builder.Default

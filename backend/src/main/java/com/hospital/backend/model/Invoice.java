@@ -96,11 +96,17 @@ public class Invoice {
         private String chargeId;
         private String serviceCode;
         private String description;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal quantity;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal unitPrice;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal lineSubtotal;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal discountAmount;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal taxAmount;
+        @Field(targetType = FieldType.DECIMAL128)
         private BigDecimal total;
     }
 
