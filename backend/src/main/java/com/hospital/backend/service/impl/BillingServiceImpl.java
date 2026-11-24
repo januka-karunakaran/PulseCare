@@ -917,13 +917,8 @@ public class BillingServiceImpl implements BillingService {
                 .set("updatedAt", Instant.now());
         mongoTemplate.updateFirst(invRefQuery, invRefUpdate, Invoice.class);
 
-        // Update payment status if fully refunded
-        if (totalRefunded.add(refundAmount).compareTo(payment.getAmount()) >= 0) {
-            payment.setStatus(PaymentStatus.REFUNDED);
-        } else {
-            payment.setStatus(PaymentStatus.PARTIALLY_REFUNDED);
-        }
-        paymentRepository.save(payment);
+        Invoice invoice = invoiceRepository.findById(payment.getInvoiceId()).orElse(null);
+        String invoiceNumber = invoice != null ? invoice.getInvoiceNumber() : payment.getInvoiceId();
 
         auditService.audit(payment.getPatientId(), "BillingRefund", savedRefund.getId(),
                 ClinicalAuditAction.PAYMENT_REFUNDED, "SUCCESS", null,
@@ -931,7 +926,7 @@ public class BillingServiceImpl implements BillingService {
 
         publishOutboxNotification(payment.getPatientId(), "PAYMENT_REFUNDED", savedRefund.getId(),
                 "Payment Refund Processed",
-                "A refund of " + savedRefund.getCurrency() + " " + refundAmount + " has been processed for invoice " + invoice.getInvoiceNumber(),
+                "A refund of " + savedRefund.getCurrency() + " " + refundAmount + " has been processed for invoice " + invoiceNumber,
                 "/patient/billing");
 
         return savedRefund;
