@@ -24,6 +24,7 @@ public class SecurityConfig {
     private static final String PATIENT = "PATIENT";
     private static final String LAB_TECH = "LAB_TECH";
     private static final String PHARMACIST = "PHARMACIST";
+    private static final String BILLING_STAFF = "BILLING_STAFF";
 
     private final JwtAuthFilter jwtAuthFilter;
 
@@ -98,6 +99,19 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.GET, "/api/pharmacy/dispense/**").hasAnyRole(ADMIN, DOCTOR, PHARMACIST, PATIENT)
                     .requestMatchers(HttpMethod.GET, "/api/pharmacy/patients/*/dispenses").hasAnyRole(ADMIN, DOCTOR, PHARMACIST, PATIENT)
                     .requestMatchers("/api/pharmacy/movements/**").hasAnyRole(ADMIN, PHARMACIST)
+
+                    // BILLING & FINANCIAL OPERATIONS
+                    .requestMatchers(HttpMethod.GET, "/api/billing/services/**").hasAnyRole(ADMIN, BILLING_STAFF, DOCTOR, PATIENT)
+                    .requestMatchers("/api/billing/services/**").hasAnyRole(ADMIN, BILLING_STAFF)
+                    .requestMatchers("/api/billing/charges/**").hasAnyRole(ADMIN, BILLING_STAFF)
+                    .requestMatchers(HttpMethod.GET, "/api/billing/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF, DOCTOR, PATIENT)
+                    .requestMatchers("/api/billing/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF)
+                    .requestMatchers("/api/billing/payments/**").hasAnyRole(ADMIN, BILLING_STAFF, PATIENT)
+                    .requestMatchers("/api/billing/refunds/**", "/api/billing/credit-notes/**").hasAnyRole(ADMIN, BILLING_STAFF)
+                    .requestMatchers("/api/billing/reports/**", "/api/billing/reconciliation").hasAnyRole(ADMIN, BILLING_STAFF)
+                    .requestMatchers("/api/billing/my-invoices", "/api/billing/my-payments").hasAnyRole(ADMIN, BILLING_STAFF, PATIENT)
+                    .requestMatchers(HttpMethod.GET, "/api/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF, PATIENT)
+                    .requestMatchers("/api/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF)
 
                     .anyRequest().authenticated()
                 )
