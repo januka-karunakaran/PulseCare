@@ -43,5 +43,9 @@ public enum ClinicalAuditAction {
     PAYMENT_CONFIRMED,
     PAYMENT_REFUNDED,
     CREDIT_NOTE_ISSUED,
-    BILLING_ACCESS_DENIED
+    BILLING_ACCESS_DENIED,
+    // Reporting & Analytics Actions
+    REPORT_VIEWED,
+    REPORT_EXPORTED,
+    ANALYTICS_ACCESS_DENIED
 }

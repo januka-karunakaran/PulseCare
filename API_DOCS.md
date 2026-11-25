@@ -221,3 +221,22 @@ All monetary amounts are represented as decimal numbers with two fractional plac
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/billing/reports/summary` | `ADMIN`, `BILLING_STAFF` | Overall revenue KPIs, collections, outstanding balance |
 | `GET` | `/api/billing/reconciliation` | `ADMIN`, `BILLING_STAFF` | Daily financial closing and payment method audit report |
+
+
+---
+
+## 📊 10. Operational Analytics & Reporting (`/api/analytics`)
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| `GET` | `/api/analytics/overview` | Admin | Retrieves executive dashboard metrics and departmental summaries |
+| `GET` | `/api/analytics/appointments` | Admin, Doctor | Aggregated appointment trends, completion rates, and status distribution |
+| `GET` | `/api/analytics/doctors/me` | Doctor | Authenticated physician workload, consultations, and documentation counts |
+| `GET` | `/api/analytics/doctors/{doctorId}` | Admin | Administrator query of specific doctor clinical workload and trends |
+| `GET` | `/api/analytics/patients/operations` | Admin | Patient registrations, demographic breakdown, and operations metrics |
+| `GET` | `/api/analytics/beds` | Admin | Real-time bed occupancy rates, type breakdown, and ward distribution |
+| `GET` | `/api/analytics/laboratory` | Admin, Lab Tech | Lab order volumes, turnaround times, and result interpretations |
+| `GET` | `/api/analytics/pharmacy` | Admin, Pharmacist | Medicine catalog counts, low stock alerts, and near-expiry batches |
+| `GET` | `/api/analytics/billing` | Admin, Billing Staff | Billed revenue, confirmed collections, outstanding receivables, aging |
+| `GET` | `/api/analytics/billing/reconciliation` | Admin, Billing Staff | Automated anomaly detection across invoices, payments, and refunds |
+| `POST` | `/api/analytics/reports/export` | Staff Roles | Exports sanitized CSV or PDF operational reports with audit logging |
