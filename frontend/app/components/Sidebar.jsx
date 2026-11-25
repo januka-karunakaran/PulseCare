@@ -25,6 +25,7 @@ import BrandLogo from "./BrandLogo";
 const adminLinks = [
   { section: "Overview" },
   { href: "/admin/dashboard", label: "Dashboard", icon: <FaHome /> },
+  { href: "/admin/analytics", label: "Analytics & KPI", icon: <FaHeartbeat /> },
   { href: "/admin/reports", label: "Reports", icon: <FaFileAlt /> },
   { section: "People" },
   { href: "/admin/doctors", label: "Doctors", icon: <FaUserMd /> },
