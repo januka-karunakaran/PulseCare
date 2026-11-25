@@ -16,8 +16,9 @@ import java.util.Map;
 public class ExecutiveOverviewDTO {
     // Patient KPIs
     private long totalRegisteredPatients;
-    private long newlyRegisteredPatients;
+    private Long newlyRegisteredPatients; // Nullable if historical registration timestamp unavailable
     private long activePatientsPeriod;
+    private String registrationTimestampStatus; // "TIMESTAMPS_AVAILABLE" or "HISTORICAL_TIMESTAMPS_NOT_AVAILABLE"
 
     // Doctor KPIs
     private long totalDoctors;

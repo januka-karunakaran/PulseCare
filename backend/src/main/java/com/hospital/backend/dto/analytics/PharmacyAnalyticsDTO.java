@@ -15,6 +15,7 @@ import java.util.Map;
 public class PharmacyAnalyticsDTO {
     private long activeMedicineCatalogCount;
     private long availableMedicineStock;
+    private Map<String, Double> stockByUnit;
     private long lowStockItemsCount;
     private long nearExpiryBatchesCount;
     private long expiredBatchesCount;

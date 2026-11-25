@@ -26,6 +26,9 @@ public class Patient {
     private String bloodGroup;
     private String address;
 
+    private java.time.Instant createdAt;
+    private java.time.Instant updatedAt;
+
     private List<FamilyMember> familyMembers;
 
     public String getId() {

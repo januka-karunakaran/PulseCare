@@ -15,7 +15,8 @@ import java.util.Map;
 @Builder
 public class PatientOperationsDTO {
     private long totalRegisteredPatients;
-    private long newRegistrationsPeriod;
+    private Long newRegistrationsPeriod;
+    private String registrationTimestampStatus; // "TIMESTAMPS_AVAILABLE" or "HISTORICAL_TIMESTAMPS_NOT_AVAILABLE"
     private long patientsWithConsultations;
     private Map<String, Long> genderDistribution;
     private Map<String, Long> bloodGroupDistribution;

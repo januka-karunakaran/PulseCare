@@ -15,6 +15,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.Aggregation;
 import org.springframework.data.mongodb.core.aggregation.AggregationResults;
@@ -22,7 +24,6 @@ import org.springframework.data.mongodb.core.query.Query;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -31,6 +32,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class AnalyticsServiceTest {
 
     @Mock
@@ -96,23 +98,23 @@ class AnalyticsServiceTest {
     }
 
     @Test
-    @DisplayName("A1-A3: Executive Overview returns accurate metrics for ADMIN")
+    @DisplayName("A1-A3: Executive Overview returns accurate metrics for ADMIN with database-side aggregations")
     void testExecutiveOverview_Admin_Success() {
         when(authz.getCurrentUser()).thenReturn(adminUser);
         when(patientRepository.count()).thenReturn(100L);
         when(doctorRepository.count()).thenReturn(10L);
-        when(doctorRepository.findAll()).thenReturn(List.of(
-                Doctor.builder().id("d1").status("ACTIVE").build(),
-                Doctor.builder().id("d2").status("INACTIVE").build()
-        ));
-        when(bedRepository.findAll()).thenReturn(List.of(
-                Bed.builder().id("b1").status("OCCUPIED").build(),
-                Bed.builder().id("b2").status("AVAILABLE").build()
-        ));
-        when(mongoTemplate.find(any(Query.class), eq(Appointment.class))).thenReturn(List.of(
-                Appointment.builder().id("a1").status("COMPLETED").build(),
-                Appointment.builder().id("a2").status("CANCELLED").build()
-        ));
+        when(mongoTemplate.count(any(Query.class), eq(Doctor.class))).thenReturn(8L);
+
+        // Bed aggregation result
+        Document bedDoc = new Document("total", 2L).append("occupied", 1L).append("available", 1L).append("maintenance", 0L);
+        AggregationResults<Document> bedAggRes = new AggregationResults<>(List.of(bedDoc), new Document());
+
+        // Appointment aggregation result
+        Document apptDoc = new Document("total", 2L).append("completed", 1L).append("booked", 0L).append("cancelled", 1L).append("pending", 0L);
+        AggregationResults<Document> apptAggRes = new AggregationResults<>(List.of(apptDoc), new Document());
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("beds"), eq(Document.class))).thenReturn(bedAggRes);
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class))).thenReturn(apptAggRes);
 
         AnalyticsFilterRequest req = AnalyticsFilterRequest.builder()
                 .dateRange(ReportingDateRange.LAST_30_DAYS)
@@ -123,7 +125,7 @@ class AnalyticsServiceTest {
         assertNotNull(overview);
         assertEquals(100L, overview.getTotalRegisteredPatients());
         assertEquals(10L, overview.getTotalDoctors());
-        assertEquals(1L, overview.getActiveDoctors());
+        assertEquals(8L, overview.getActiveDoctors());
         assertEquals(2L, overview.getTotalBeds());
         assertEquals(1L, overview.getOccupiedBeds());
         assertEquals(50.0, overview.getBedOccupancyRate());
@@ -148,11 +150,15 @@ class AnalyticsServiceTest {
         when(doctorRepository.findByUserId("doc-user-1")).thenReturn(Optional.of(
                 Doctor.builder().id("doc-entity-1").userId("doc-user-1").fullName("Dr. Smith").build()
         ));
-        when(mongoTemplate.find(any(Query.class), eq(Appointment.class))).thenReturn(List.of(
-                Appointment.builder().id("a1").doctorId("doc-entity-1").status("COMPLETED").build()
-        ));
+
+        Document apptDoc = new Document("total", 1L).append("completed", 1L).append("booked", 0L).append("cancelled", 0L).append("pending", 0L);
+        AggregationResults<Document> apptAggRes = new AggregationResults<>(List.of(apptDoc), new Document());
         AggregationResults<Document> emptyAggRes = new AggregationResults<>(List.of(), new Document());
-        when(mongoTemplate.aggregate(any(Aggregation.class), anyString(), eq(Document.class))).thenReturn(emptyAggRes);
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class)))
+                .thenReturn(apptAggRes)
+                .thenReturn(emptyAggRes)
+                .thenReturn(emptyAggRes);
 
         AnalyticsFilterRequest req = AnalyticsFilterRequest.builder()
                 .dateRange(ReportingDateRange.LAST_7_DAYS)
@@ -214,7 +220,7 @@ class AnalyticsServiceTest {
     }
 
     @Test
-    @DisplayName("E14: Reconciliation detects paid invoices with positive outstanding balances")
+    @DisplayName("E14: Reconciliation detects paid invoices with positive outstanding balances via bounded query")
     void testFinancialReconciliation_DetectsAnomaly() {
         when(authz.getCurrentUser()).thenReturn(adminUser);
 
@@ -225,9 +231,11 @@ class AnalyticsServiceTest {
                 .outstandingAmount(new BigDecimal("25.00"))
                 .build();
 
-        when(invoiceRepository.findAll()).thenReturn(List.of(invalidInvoice));
-        when(paymentRepository.findAll()).thenReturn(List.of());
-        when(refundRepository.count()).thenReturn(0L);
+        when(mongoTemplate.find(any(Query.class), eq(Invoice.class))).thenReturn(List.of(invalidInvoice));
+        when(mongoTemplate.find(any(Query.class), eq(BillingPayment.class))).thenReturn(List.of());
+
+        AggregationResults<Document> emptyAggRes = new AggregationResults<>(List.of(), new Document());
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("billing_payments"), eq(Document.class))).thenReturn(emptyAggRes);
 
         FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
 
