@@ -1,5 +1,6 @@
 package com.hospital.backend.service;
 
+import com.hospital.backend.dto.bed.BedSummaryDTO;
 import com.hospital.backend.model.Bed;
 import com.hospital.backend.model.BedBooking;
 import java.util.List;
@@ -7,6 +8,7 @@ import java.util.List;
 public interface BedService {
     Bed addBed(Bed bed);
     List<Bed> getAllBeds();
+    List<BedSummaryDTO> getAvailableBeds();
     Bed getBedById(String id);
     Bed updateBed(String id, Bed bed);
     void deleteBed(String id);

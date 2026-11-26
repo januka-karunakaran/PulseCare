@@ -468,6 +468,16 @@ public class AuthorizationService {
         return user.getRole() == Role.ADMIN || user.getRole() == Role.BILLING_STAFF;
     }
 
+    public boolean canManageBeds() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.BED_MANAGER;
+    }
+
+    public boolean canAdmitOrTransfer() {
+        User user = getCurrentUser();
+        return user.getRole() == Role.ADMIN || user.getRole() == Role.DOCTOR || user.getRole() == Role.BED_MANAGER;
+    }
+
     public void checkPaymentAccess(com.hospital.backend.model.BillingPayment payment) {
         if (payment == null) {
             throw new ResourceNotFoundException("Payment not found");

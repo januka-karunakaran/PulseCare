@@ -14,6 +14,7 @@ public interface BillingChargeRepository extends MongoRepository<BillingCharge, 
     Optional<BillingCharge> findByChargeNumber(String chargeNumber);
     Optional<BillingCharge> findBySourceTypeAndSourceIdAndSourceLineId(ChargeSourceType sourceType, String sourceId, String sourceLineId);
     List<BillingCharge> findByPatientIdAndChargeStatus(String patientId, ChargeStatus status);
+    List<BillingCharge> findByPatientId(String patientId);
     Page<BillingCharge> findByPatientId(String patientId, Pageable pageable);
     List<BillingCharge> findByInvoiceId(String invoiceId);
     Optional<BillingCharge> findByIdempotencyKey(String idempotencyKey);

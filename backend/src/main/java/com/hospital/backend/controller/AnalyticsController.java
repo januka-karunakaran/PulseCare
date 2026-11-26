@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
+    private final com.hospital.backend.service.BedOccupancyAnalyticsService bedOccupancyAnalyticsService;
 
     @GetMapping("/overview")
     @PreAuthorize("hasRole('ADMIN')")
@@ -55,9 +56,52 @@ public class AnalyticsController {
     }
 
     @GetMapping("/beds")
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN', 'BED_MANAGER')")
     public ResponseEntity<BedUtilizationDTO> getBedUtilization() {
         return ResponseEntity.ok(analyticsService.getBedUtilization());
+    }
+
+    @GetMapping("/beds/history")
+    @PreAuthorize("hasAnyRole('ADMIN', 'BED_MANAGER')")
+    public ResponseEntity<com.hospital.backend.dto.bed.HistoricalOccupancyReportDTO> getBedOccupancyHistory(
+            @RequestParam(value = "preset", defaultValue = "7D") String preset,
+            @RequestParam(value = "start", required = false) java.time.Instant start,
+            @RequestParam(value = "end", required = false) java.time.Instant end,
+            @RequestParam(value = "wardId", required = false) String wardId,
+            @RequestParam(value = "bedType", required = false) String bedType,
+            @RequestParam(value = "timeZone", defaultValue = "Asia/Colombo") String timeZone) {
+        if (start != null && end != null) {
+            return ResponseEntity.ok(bedOccupancyAnalyticsService.getHistoricalOccupancy(start, end, wardId, bedType, timeZone));
+        }
+        return ResponseEntity.ok(bedOccupancyAnalyticsService.getHistoricalOccupancyForPreset(preset, wardId, bedType, timeZone));
+    }
+
+    @GetMapping("/beds/occupancy")
+    @PreAuthorize("hasAnyRole('ADMIN', 'BED_MANAGER')")
+    public ResponseEntity<com.hospital.backend.dto.bed.HistoricalOccupancyReportDTO> getBedOccupancy(
+            @RequestParam(value = "date", required = false) String dateStr,
+            @RequestParam(value = "wardId", required = false) String wardId,
+            @RequestParam(value = "bedType", required = false) String bedType,
+            @RequestParam(value = "timeZone", defaultValue = "Asia/Colombo") String timeZone) {
+        java.time.LocalDate date = dateStr != null ? java.time.LocalDate.parse(dateStr) : java.time.LocalDate.now();
+        return ResponseEntity.ok(bedOccupancyAnalyticsService.getDailyOccupancy(date, wardId, bedType, timeZone));
+    }
+
+    @GetMapping("/beds/length-of-stay")
+    @PreAuthorize("hasAnyRole('ADMIN', 'BED_MANAGER')")
+    public ResponseEntity<java.util.Map<String, Object>> getBedLengthOfStay(
+            @RequestParam(value = "preset", defaultValue = "30D") String preset,
+            @RequestParam(value = "wardId", required = false) String wardId,
+            @RequestParam(value = "bedType", required = false) String bedType,
+            @RequestParam(value = "timeZone", defaultValue = "Asia/Colombo") String timeZone) {
+        com.hospital.backend.dto.bed.HistoricalOccupancyReportDTO report = bedOccupancyAnalyticsService.getHistoricalOccupancyForPreset(preset, wardId, bedType, timeZone);
+        return ResponseEntity.ok(java.util.Map.of(
+                "averageLengthOfStayHours", report.getAverageLengthOfStayHours(),
+                "averageLengthOfStayDays", Math.round((report.getAverageLengthOfStayHours() / 24.0) * 100.0) / 100.0,
+                "totalAdmissions", report.getAdmissionsCount(),
+                "totalDischarges", report.getDischargesCount(),
+                "dataCompletenessStatus", report.getDataCompletenessStatus()
+        ));
     }
 
     @GetMapping("/laboratory")

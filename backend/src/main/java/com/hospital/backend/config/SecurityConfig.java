@@ -25,6 +25,7 @@ public class SecurityConfig {
     private static final String LAB_TECH = "LAB_TECH";
     private static final String PHARMACIST = "PHARMACIST";
     private static final String BILLING_STAFF = "BILLING_STAFF";
+    private static final String BED_MANAGER = "BED_MANAGER";
 
     private final JwtAuthFilter jwtAuthFilter;
 
@@ -112,6 +113,27 @@ public class SecurityConfig {
                     .requestMatchers("/api/billing/my-invoices", "/api/billing/my-payments").hasAnyRole(ADMIN, BILLING_STAFF, PATIENT)
                     .requestMatchers(HttpMethod.GET, "/api/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF, PATIENT)
                     .requestMatchers("/api/invoices/**").hasAnyRole(ADMIN, BILLING_STAFF)
+
+                    // HOSPITAL WARDS & INPATIENT BEDS
+                    .requestMatchers(HttpMethod.GET, "/api/wards/**").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers("/api/wards/**").hasRole(ADMIN)
+
+                    .requestMatchers(HttpMethod.GET, "/api/beds/availability").hasAnyRole(ADMIN, DOCTOR, PATIENT, BED_MANAGER)
+                    .requestMatchers(HttpMethod.GET, "/api/beds/patient/**").hasAnyRole(ADMIN, DOCTOR, PATIENT, BED_MANAGER)
+                    .requestMatchers(HttpMethod.GET, "/api/beds/**").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers(HttpMethod.POST, "/api/beds/book").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers(HttpMethod.POST, "/api/beds/discharge/**").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers(HttpMethod.POST, "/api/beds/*/mark-cleaning", "/api/beds/*/mark-ready").hasAnyRole(ADMIN, BED_MANAGER)
+                    .requestMatchers("/api/beds/**").hasRole(ADMIN)
+
+                    // INPATIENT ADMISSIONS & TRANSFERS
+                    .requestMatchers(HttpMethod.GET, "/api/admissions/my-history").hasRole(PATIENT)
+                    .requestMatchers(HttpMethod.GET, "/api/admissions/patient/**").hasAnyRole(ADMIN, DOCTOR, PATIENT, BED_MANAGER)
+                    .requestMatchers(HttpMethod.GET, "/api/admissions/doctor/**").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.POST, "/api/admissions/*/discharge-ready").hasAnyRole(ADMIN, DOCTOR)
+                    .requestMatchers(HttpMethod.POST, "/api/admissions/*/transfers", "/api/admissions/*/discharge").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers(HttpMethod.POST, "/api/admissions").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER)
+                    .requestMatchers("/api/admissions/**").hasAnyRole(ADMIN, DOCTOR, BED_MANAGER, PATIENT)
 
                     .anyRequest().authenticated()
                 )
