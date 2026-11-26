@@ -44,6 +44,15 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
     @Container
     private static final MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
 
+    static {
+        try {
+            if (DockerClientFactory.instance().isDockerAvailable()) {
+                mongoDBContainer.start();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     @DynamicPropertySource
     static void setMongoProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.data.mongodb.uri", () -> mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB));
@@ -276,7 +285,7 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
                 } catch (BedAlreadyOccupiedException ex) {
                     conflictCount.incrementAndGet();
                 } catch (Throwable t) {
-                    // unexpected error
+                    t.printStackTrace();
                 }
             });
         }
