@@ -15,6 +15,7 @@ import com.hospital.backend.repository.BedRepository;
 import com.hospital.backend.service.AdmissionService;
 import com.hospital.backend.service.BedService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -43,6 +44,7 @@ public class BedServiceImpl implements BedService {
     private final AdmissionService admissionService;
 
     // Primary constructor with AdmissionService injection
+    @Autowired
     public BedServiceImpl(BedRepository bedRepository,
                           BedBookingRepository bedBookingRepository,
                           MongoTemplate mongoTemplate,
