@@ -1,23 +1,29 @@
 # Performance Benchmarks & Query Complexity Analysis
 
-## Methodology & Execution Context
-All queries in Feature 02.8 / 02.8.1 are engineered for bounded memory and zero unbounded JVM heap loading. Measurements reflect execution over indexed MongoDB collections in a controlled local integration testing environment.
+## Performance Benchmark Status: NOT MEASURED (Algorithmic Complexity Guaranteed)
 
-## Query Complexity & Latency Profile
+> [!NOTE]
+> Reproducible millisecond benchmarks require an isolated, hardware-dedicated benchmark harness and multi-node MongoDB replica set with pre-warmed synthetic collections. In this CI/CD and developer environment, arbitrary millisecond estimates are explicitly marked as **NOT MEASURED** to avoid unverified production performance claims.
+> Instead, performance and memory safety are guaranteed through strict asymptotic query complexity boundaries, database-side aggregation pipelines, and indexed filters.
 
-1. **Database-Side Aggregations (No Unbounded Scans)**:
-   - **Bed Status Distribution**: Database-side `$group` on `status`. Latency: $\approx 1-3\text{ ms}$.
-   - **Appointment Status Aggregation**: Filtered on `appointmentDate` index + `$group` on `status`. Latency: $\approx 3-7\text{ ms}$.
-   - **Laboratory TAT Aggregation**: Bounded `$match` on `workflowStatus: RELEASED` + `$project` + `$group`. Latency: $\approx 5-10\text{ ms}$.
-   - **Financial Reconciliation**: Aggregated `$lookup` detecting unledgered payments bounded by `limit(100)`. Eliminates N+1 query loops. Latency: $\approx 8-15\text{ ms}$.
+---
 
-2. **Memory Footprint & JVM Protection**:
-   - Zero `findAll()` invocations on high-volume operational collections (`appointments`, `invoices`, `payments`, `beds`).
-   - All date range boundaries are pre-computed deterministically to UTC instant boundaries.
-   - Streaming/structured serialization for CSV and PDF exports with formula injection escaping.
+## Asymptotic Query Complexity & Memory Footprint
 
-3. **Measured Benchmark Summary**:
-   - Executive overview aggregate execution duration: $\approx 15-25\text{ ms}$.
-   - Appointment trends query execution duration: $\approx 5-10\text{ ms}$.
-   - Reconciliation dashboard execution duration: $\approx 10-18\text{ ms}$.
-   - Structured export generation (CSV/PDF) duration: $\approx 15-30\text{ ms}$.
+1. **Elimination of Unbounded Collection Scans**:
+   - Zero `findAll()` calls on high-volume transactional collections (`appointments`, `invoices`, `billing_payments`, `beds`, `pharmacy_stock_batches`).
+   - All collection queries enforce either selective indexed criteria or strict database-side pagination (`limit(100)`).
+
+2. **MongoDB Database-Side Aggregations**:
+   - **Bed Status Distribution**: Database-side `$group` on indexed `status`. Complexity: $O(N_{\text{beds}})$ processed entirely within the MongoDB engine.
+   - **Appointment Status Aggregation**: Filtered on `appointmentDate` index + `$group` on `status`. Complexity: $O(M)$ where $M$ is appointments in date window.
+   - **Laboratory Turnaround Time**: Bounded `$match` on `workflowStatus: RELEASED` + `$project` + `$group`. Memory footprint bounded by index on `{'workflowStatus': 1, 'releasedAt': -1}`.
+   - **Financial Reconciliation Anomaly Checks**:
+     - Invalid Paid Invoices: Count query + bounded find (`limit(100)`).
+     - Missing Ledger Entries: Count aggregation pipeline + bounded aggregation (`limit(100)`) with `$lookup` joining on `_id` and `paymentId`. Eliminates N+1 loop latency.
+     - Over-refunded Payments: Count query + bounded find (`limit(100)`).
+
+3. **Memory Footprint & JVM Protection**:
+   - Streaming PrintWriter for CSV generation.
+   - Paginated multi-page PDF generation via PDFBox with streaming page creation and disposal.
+   - All monetary arithmetic uses `BigDecimal` with scale 2 (`HALF_UP`) matching BSON Decimal128, eliminating floating-point memory expansion and inaccuracies.

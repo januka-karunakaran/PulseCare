@@ -18,7 +18,7 @@ public class ExecutiveOverviewDTO {
     private long totalRegisteredPatients;
     private Long newlyRegisteredPatients; // Nullable if historical registration timestamp unavailable
     private long activePatientsPeriod;
-    private String registrationTimestampStatus; // "TIMESTAMPS_AVAILABLE" or "HISTORICAL_TIMESTAMPS_NOT_AVAILABLE"
+    private String registrationTimestampStatus; // "COMPLETE", "PARTIAL_HISTORICAL_DATA", or "UNAVAILABLE"
 
     // Doctor KPIs
     private long totalDoctors;

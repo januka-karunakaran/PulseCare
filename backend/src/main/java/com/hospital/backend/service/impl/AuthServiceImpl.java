@@ -101,12 +101,15 @@ public class AuthServiceImpl implements AuthService {
 
         user = userRepository.save(user);
 
+        Instant now = Instant.now();
         Patient patient = Patient.builder()
                 .userId(user.getId())
                 .fullName(user.getFullName())
                 .email(user.getEmail())
                 .phone(user.getPhoneNumber())
                 .address(user.getAddress())
+                .createdAt(now)
+                .updatedAt(now)
                 .build();
         patientRepository.save(patient);
         emailVerificationCodeRepository.deleteByEmail(normalizedEmail);

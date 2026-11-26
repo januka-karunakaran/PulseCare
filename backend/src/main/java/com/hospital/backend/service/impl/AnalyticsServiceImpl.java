@@ -461,18 +461,32 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         AggregationResults<Document> unitRes = mongoTemplate.aggregate(unitAgg, "pharmacy_stock_batches", Document.class);
 
         Map<String, Double> stockByUnit = new HashMap<>();
-        long totalAvailableSum = 0;
         for (Document d : unitRes.getMappedResults()) {
             String unit = d.getString("_id");
-            if (unit == null || unit.isBlank()) unit = "UNITS";
+            if (unit == null || unit.isBlank()) {
+                unit = "UNKNOWN";
+            }
             double qty = ((Number) d.getOrDefault("totalUnitQuantity", 0.0)).doubleValue();
             stockByUnit.put(unit, qty);
-            totalAvailableSum += (long) qty;
         }
+
+        long availableBatchesCount = mongoTemplate.count(
+                Query.query(availableBatchCriteria),
+                PharmacyStockBatch.class
+        );
+
+        Aggregation distinctMedsAgg = newAggregation(
+                match(availableBatchCriteria),
+                group("medicineId")
+        );
+        AggregationResults<Document> distinctMedsRes = mongoTemplate.aggregate(distinctMedsAgg, "pharmacy_stock_batches", Document.class);
+        long distinctMedsInStock = distinctMedsRes.getMappedResults().size();
 
         return PharmacyAnalyticsDTO.builder()
                 .activeMedicineCatalogCount(activeMeds)
-                .availableMedicineStock(totalAvailableSum)
+                .availableMedicineStock(availableBatchesCount) // Deprecated scalar avoids summing tablets + ml
+                .availableBatchesCount(availableBatchesCount)
+                .distinctMedicinesInStock(distinctMedsInStock)
                 .stockByUnit(stockByUnit)
                 .lowStockItemsCount(lowStockCount)
                 .nearExpiryBatchesCount(nearExpiryCount)
@@ -522,13 +536,13 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         List<FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem> anomalies = new ArrayList<>();
 
         // Section 7: Bounded & Indexed query (No findAll!)
-        // Anomaly Check 1: Invoices marked PAID with outstandingAmount > 0 (Limit 100)
-        Query invalidPaidQuery = Query.query(
-                Criteria.where("status").is(InvoiceStatus.PAID)
-                        .and("outstandingAmount").gt(new org.bson.types.Decimal128(BigDecimal.ZERO))
-        ).limit(100);
+        // Anomaly Check 1: Invoices marked PAID with outstandingAmount > 0
+        Criteria invalidPaidCriteria = Criteria.where("status").is(InvoiceStatus.PAID)
+                .and("outstandingAmount").gt(new org.bson.types.Decimal128(BigDecimal.ZERO));
+        long countInvalidPaid = mongoTemplate.count(Query.query(invalidPaidCriteria), Invoice.class);
 
-        List<Invoice> invalidPaidInvoices = mongoTemplate.find(invalidPaidQuery, Invoice.class);
+        List<Invoice> invalidPaidInvoices = mongoTemplate.find(
+                Query.query(invalidPaidCriteria).limit(100), Invoice.class);
         for (Invoice inv : invalidPaidInvoices) {
             anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
                     .anomalyType("PAID_STATUS_WITH_OUTSTANDING_BALANCE")
@@ -543,7 +557,17 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                     .build());
         }
 
-        // Anomaly Check 2: Confirmed Payments missing Ledger Entry (via Aggregation Lookup - zero N+1)
+        // Anomaly Check 2: Confirmed Payments missing Ledger Entry (via Aggregation Lookup)
+        Aggregation missingLedgerCountAgg = newAggregation(
+                match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
+                lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
+                match(Criteria.where("ledgerEntries").size(0)),
+                count().as("total")
+        );
+        AggregationResults<Document> missingLedgerCountRes = mongoTemplate.aggregate(missingLedgerCountAgg, "billing_payments", Document.class);
+        long countMissingLedgers = missingLedgerCountRes.getMappedResults().isEmpty() ? 0L :
+                ((Number) missingLedgerCountRes.getMappedResults().get(0).getOrDefault("total", 0L)).longValue();
+
         Aggregation missingLedgerAgg = newAggregation(
                 match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
                 lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
@@ -552,10 +576,15 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         );
         AggregationResults<Document> missingLedgerRes = mongoTemplate.aggregate(missingLedgerAgg, "billing_payments", Document.class);
         for (Document doc : missingLedgerRes.getMappedResults()) {
-            String payId = doc.getString("_id");
+            String payId = doc.get("_id") != null ? doc.get("_id").toString() : null;
             String payNum = doc.getString("paymentNumber");
             Object amtObj = doc.get("amount");
-            BigDecimal amt = amtObj instanceof org.bson.types.Decimal128 d128 ? d128.bigDecimalValue() : BigDecimal.ZERO;
+            BigDecimal amt = BigDecimal.ZERO;
+            if (amtObj instanceof org.bson.types.Decimal128 d128) {
+                amt = d128.bigDecimalValue();
+            } else if (amtObj instanceof Number num) {
+                amt = BigDecimal.valueOf(num.doubleValue()).setScale(2, RoundingMode.HALF_UP);
+            }
 
             anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
                     .anomalyType("CONFIRMED_PAYMENT_MISSING_LEDGER_ENTRY")
@@ -571,10 +600,10 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         }
 
         // Anomaly Check 3: Over-refunded payments (via MongoDB comparison query, limit 100)
-        Query overRefundQuery = Query.query(
-                Criteria.where("$expr").is(new Document("$gt", List.of("$refundedAmount", "$amount")))
-        ).limit(100);
-        List<BillingPayment> overRefunded = mongoTemplate.find(overRefundQuery, BillingPayment.class);
+        Criteria overRefundCriteria = Criteria.where("$expr").is(new Document("$gt", List.of("$refundedAmount", "$amount")));
+        long countOverRefunded = mongoTemplate.count(Query.query(overRefundCriteria), BillingPayment.class);
+
+        List<BillingPayment> overRefunded = mongoTemplate.find(Query.query(overRefundCriteria).limit(100), BillingPayment.class);
         for (BillingPayment p : overRefunded) {
             anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
                     .anomalyType("PAYMENT_OVER_REFUNDED")
@@ -592,16 +621,26 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         long totalInvoices = invoiceRepository.count();
         long totalPayments = paymentRepository.count();
         long totalRefunds = refundRepository.count();
+        long totalExamined = totalInvoices + totalPayments + totalRefunds;
+        long totalDiscrepancies = countInvalidPaid + countMissingLedgers + countOverRefunded;
+        long returnedCount = anomalies.size();
+        boolean isTruncated = totalDiscrepancies > returnedCount;
 
         auditService.audit(null, "ANALYTICS", "FINANCIAL_RECONCILIATION",
                 ClinicalAuditAction.REPORT_VIEWED, "SUCCESS", null,
-                "Financial reconciliation audit executed. Anomalies found: " + anomalies.size());
+                "Financial reconciliation audit executed. Total discrepancies detected: " + totalDiscrepancies + ", returned: " + returnedCount);
 
         return FinancialReconciliationDashboardDTO.builder()
-                .totalInconsistenciesDetected(anomalies.size())
+                .totalInconsistenciesDetected(totalDiscrepancies)
                 .totalInvoicesAudited(totalInvoices)
                 .totalPaymentsAudited(totalPayments)
                 .totalRefundsAudited(totalRefunds)
+                .examinedRecordsCount(totalExamined)
+                .returnedAnomaliesCount(returnedCount)
+                .truncated(isTruncated)
+                .hasMore(isTruncated)
+                .page(0)
+                .pageSize(100)
                 .anomalies(anomalies)
                 .auditedAt(Instant.now())
                 .build();
@@ -706,32 +745,89 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     private record PatientCountResult(Long newCount, String status) {}
 
     private PatientCountResult countNewPatients(AnalyticsDateUtils.DateBoundaries b) {
-        // Section 2: Check if createdAt timestamps are present on patient records
+        long totalPatients = patientRepository.count();
+        if (totalPatients == 0) {
+            return new PatientCountResult(0L, "COMPLETE");
+        }
+
         long timestampedCount = mongoTemplate.count(
                 Query.query(Criteria.where("createdAt").exists(true)),
                 Patient.class
         );
         if (timestampedCount == 0) {
-            return new PatientCountResult(null, "HISTORICAL_TIMESTAMPS_NOT_AVAILABLE");
+            return new PatientCountResult(null, "UNAVAILABLE");
         }
 
         long count = mongoTemplate.count(
                 Query.query(Criteria.where("createdAt").gte(b.startInclusive()).lt(b.endExclusive())),
                 Patient.class
         );
-        return new PatientCountResult(count, "TIMESTAMPS_AVAILABLE");
+        if (timestampedCount < totalPatients) {
+            return new PatientCountResult(count, "PARTIAL_HISTORICAL_DATA");
+        } else {
+            return new PatientCountResult(count, "COMPLETE");
+        }
     }
 
     private long countPatientsWithConsultations(AnalyticsDateUtils.DateBoundaries b) {
-        // Section 2: Real completed appointments or encounters in period
-        Aggregation agg = newAggregation(
+        // Section 2: Real completed appointments OR finalized clinical encounters in period
+        Aggregation apptAgg = newAggregation(
                 match(Criteria.where("appointmentDate").gte(b.startDate().toString()).lte(b.endDate().toString())
                         .and("status").is("COMPLETED")),
-                group("patientId"),
-                count().as("total")
+                group("patientId")
         );
-        AggregationResults<Document> res = mongoTemplate.aggregate(agg, "appointments", Document.class);
-        return res.getMappedResults().isEmpty() ? 0 : ((Number) res.getMappedResults().get(0).getOrDefault("total", 0)).longValue();
+        AggregationResults<Document> apptRes = mongoTemplate.aggregate(apptAgg, "appointments", Document.class);
+        Set<String> rawPatientIds = new HashSet<>();
+        if (apptRes != null && apptRes.getMappedResults() != null) {
+            for (Document doc : apptRes.getMappedResults()) {
+                String pid = doc.getString("_id");
+                if (pid != null && !pid.isBlank()) {
+                    rawPatientIds.add(pid);
+                }
+            }
+        }
+
+        Criteria encounterCriteria = Criteria.where("status").in(List.of(EncounterStatus.SIGNED.name(), EncounterStatus.AMENDED.name()))
+                .and("visitStartedAt").gte(b.startInclusive()).lt(b.endExclusive());
+        Aggregation encounterAgg = newAggregation(
+                match(encounterCriteria),
+                group("patientId")
+        );
+        AggregationResults<Document> encounterRes = mongoTemplate.aggregate(encounterAgg, "clinical_encounters", Document.class);
+        if (encounterRes != null && encounterRes.getMappedResults() != null) {
+            for (Document doc : encounterRes.getMappedResults()) {
+                String pid = doc.getString("_id");
+                if (pid != null && !pid.isBlank()) {
+                    rawPatientIds.add(pid);
+                }
+            }
+        }
+
+        if (rawPatientIds.isEmpty()) {
+            return 0L;
+        }
+
+        // Canonical ID resolution for Patient.id vs Patient.userId
+        Query resolveQuery = Query.query(new Criteria().orOperator(
+                Criteria.where("_id").in(rawPatientIds),
+                Criteria.where("userId").in(rawPatientIds)
+        ));
+        List<Patient> matchedPatients = mongoTemplate.find(resolveQuery, Patient.class);
+        Set<String> canonicalPatientIds = new HashSet<>();
+        Set<String> resolvedRawIds = new HashSet<>();
+        for (Patient p : matchedPatients) {
+            canonicalPatientIds.add(p.getId());
+            if (p.getId() != null) resolvedRawIds.add(p.getId());
+            if (p.getUserId() != null) resolvedRawIds.add(p.getUserId());
+        }
+
+        for (String rawId : rawPatientIds) {
+            if (!resolvedRawIds.contains(rawId)) {
+                canonicalPatientIds.add(rawId);
+            }
+        }
+
+        return canonicalPatientIds.size();
     }
 
     private long countAppointmentsForDate(String dateStr) {
@@ -770,7 +866,7 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         );
 
         AggregationResults<Document> res = mongoTemplate.aggregate(agg, "appointments", Document.class);
-        if (res.getMappedResults().isEmpty()) {
+        if (res == null || res.getMappedResults() == null || res.getMappedResults().isEmpty()) {
             return new AppointmentPeriodCounts(0, 0, 0, 0, 0, 0.0);
         }
 
@@ -907,7 +1003,7 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         );
 
         AggregationResults<Document> res = mongoTemplate.aggregate(agg, "beds", Document.class);
-        if (res.getMappedResults().isEmpty()) {
+        if (res == null || res.getMappedResults() == null || res.getMappedResults().isEmpty()) {
             return new BedStats(0, 0, 0, 0, 0.0);
         }
 

@@ -16,6 +16,7 @@ import com.hospital.backend.service.PatientService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -34,6 +35,7 @@ public class PatientServiceImpl implements PatientService {
 
     @Override
     public Patient createPatient(PatientRequest request) {
+        Instant now = Instant.now();
         Patient patient = Patient.builder()
             .userId(request.getUserId())
             .fullName(request.getFullName())
@@ -43,6 +45,8 @@ public class PatientServiceImpl implements PatientService {
             .gender(request.getGender())
             .bloodGroup(request.getBloodGroup())
             .address(request.getAddress())
+            .createdAt(now)
+            .updatedAt(now)
             .build();
 
         return patientRepository.save(patient);
@@ -70,6 +74,7 @@ public class PatientServiceImpl implements PatientService {
         patient.setGender(request.getGender());
         patient.setBloodGroup(request.getBloodGroup());
         patient.setAddress(request.getAddress());
+        patient.setUpdatedAt(Instant.now());
 
         return patientRepository.save(patient);
     }
@@ -198,6 +203,7 @@ public class PatientServiceImpl implements PatientService {
         member.setId(java.util.UUID.randomUUID().toString());
         members.add(member);
         patient.setFamilyMembers(members);
+        patient.setUpdatedAt(Instant.now());
         return patientRepository.save(patient);
     }
 

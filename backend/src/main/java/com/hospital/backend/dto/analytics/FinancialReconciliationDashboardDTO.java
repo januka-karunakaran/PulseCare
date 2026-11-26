@@ -19,6 +19,13 @@ public class FinancialReconciliationDashboardDTO {
     private long totalPaymentsAudited;
     private long totalRefundsAudited;
 
+    private long examinedRecordsCount;
+    private long returnedAnomaliesCount;
+    private boolean truncated;
+    private boolean hasMore;
+    private int page;
+    private int pageSize;
+
     private List<ReconciliationAnomalyItem> anomalies;
     private Instant auditedAt;
 
