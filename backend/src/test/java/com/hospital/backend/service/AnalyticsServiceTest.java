@@ -247,6 +247,8 @@ class AnalyticsServiceTest {
         assertEquals(1, report.getTotalInconsistenciesDetected());
         assertEquals(1, report.getReturnedAnomaliesCount());
         assertFalse(report.isTruncated());
+        assertTrue(report.isPreviewOnly());
+        assertNotNull(report.getPaginationNotice());
         assertEquals("PAID_STATUS_WITH_OUTSTANDING_BALANCE", report.getAnomalies().get(0).getAnomalyType());
         assertEquals(new BigDecimal("25.00"), report.getAnomalies().get(0).getActualAmount());
     }
