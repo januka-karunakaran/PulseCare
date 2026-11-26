@@ -557,10 +557,26 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                     .build());
         }
 
-        // Anomaly Check 2: Confirmed Payments missing Ledger Entry (via Aggregation Lookup)
+        // Anomaly Check 2: Confirmed Payments missing Ledger Entry (Type-Safe Aggregation Lookup covering both BSON ObjectId & String)
+        org.springframework.data.mongodb.core.aggregation.AggregationOperation lookupLedgerEntries = context -> new Document("$lookup",
+                new Document("from", "billing_ledger_entries")
+                        .append("let", new Document("payIdStr", new Document("$toString", "$_id"))
+                                .append("rawId", "$_id"))
+                        .append("pipeline", List.of(
+                                new Document("$match",
+                                        new Document("$expr",
+                                                new Document("$or", List.of(
+                                                        new Document("$eq", List.of("$paymentId", "$$payIdStr")),
+                                                        new Document("$eq", List.of("$paymentId", "$$rawId"))
+                                                ))
+                                        ))
+                        ))
+                        .append("as", "ledgerEntries")
+        );
+
         Aggregation missingLedgerCountAgg = newAggregation(
-                match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
-                lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
+                match(Criteria.where("status").in(List.of(PaymentStatus.CONFIRMED, "CONFIRMED"))),
+                lookupLedgerEntries,
                 match(Criteria.where("ledgerEntries").size(0)),
                 count().as("total")
         );
@@ -569,8 +585,8 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                 ((Number) missingLedgerCountRes.getMappedResults().get(0).getOrDefault("total", 0L)).longValue();
 
         Aggregation missingLedgerAgg = newAggregation(
-                match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
-                lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
+                match(Criteria.where("status").in(List.of(PaymentStatus.CONFIRMED, "CONFIRMED"))),
+                lookupLedgerEntries,
                 match(Criteria.where("ledgerEntries").size(0)),
                 limit(100)
         );
@@ -638,9 +654,10 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                 .examinedRecordsCount(totalExamined)
                 .returnedAnomaliesCount(returnedCount)
                 .truncated(isTruncated)
-                .hasMore(isTruncated)
-                .page(0)
-                .pageSize(100)
+                .previewOnly(true)
+                .paginationNotice(isTruncated
+                        ? "Bounded preview of top 100 discrepancies. Complete count reflected in totalInconsistenciesDetected."
+                        : "Complete audit dataset. All discrepancies included.")
                 .anomalies(anomalies)
                 .auditedAt(Instant.now())
                 .build();
