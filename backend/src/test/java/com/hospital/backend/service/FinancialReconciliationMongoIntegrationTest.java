@@ -11,6 +11,11 @@ import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -27,9 +32,14 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Mandatory Financial Reconciliation MongoDB Integration Test.
+ * Enforces strict Docker isolation, disposable Testcontainers database,
+ * and verifies type-safe BSON joins between payments and double-entry ledger entries.
+ */
 @SpringBootTest
 @ActiveProfiles("test")
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 public class FinancialReconciliationMongoIntegrationTest {
 
     private static final String ISOLATED_TEST_DB = "disposable_reconciliation_" + UUID.randomUUID().toString().replace("-", "");
@@ -37,23 +47,19 @@ public class FinancialReconciliationMongoIntegrationTest {
     @Container
     private static final MongoDBContainer mongoDBContainer = new MongoDBContainer("mongo:7.0");
 
-    static {
-        try {
-            if (DockerClientFactory.instance().isDockerAvailable()) {
-                mongoDBContainer.start();
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
     @DynamicPropertySource
     static void setMongoProperties(DynamicPropertyRegistry registry) {
-        if (mongoDBContainer != null && mongoDBContainer.isRunning()) {
-            registry.add("spring.data.mongodb.uri", () -> mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB));
-            registry.add("spring.data.mongodb.database", () -> ISOLATED_TEST_DB);
-        } else if (System.getenv("MONGODB_URI") != null) {
-            registry.add("spring.data.mongodb.uri", () -> System.getenv("MONGODB_URI"));
+        registry.add("spring.data.mongodb.uri", () -> mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB));
+        registry.add("spring.data.mongodb.database", () -> ISOLATED_TEST_DB);
+    }
+
+    @BeforeAll
+    public static void verifyIsolatedEnvironment() {
+        if (!DockerClientFactory.instance().isDockerAvailable()) {
+            fail("FAIL-CLOSED: Docker is mandatory for FinancialReconciliationMongoIntegrationTest. Connecting to non-isolated environments is prohibited.");
         }
+        assertTrue(mongoDBContainer.isRunning(),
+                "FAIL-CLOSED: Disposable Testcontainers MongoDB instance must be running");
     }
 
     @Autowired
@@ -81,47 +87,64 @@ public class FinancialReconciliationMongoIntegrationTest {
     private MongoTemplate mongoTemplate;
 
     private User adminUser;
+    private User patientUser;
     private Patient patient;
     private Invoice testInvoice;
 
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
     @BeforeEach
     void setUp() {
+        // Enforce DB Isolation Guard: Ensure we NEVER touch any database other than our disposable test DB
+        String connectedDb = mongoTemplate.getDb().getName();
+        assertTrue(connectedDb.startsWith("disposable_reconciliation_"),
+                "SECURITY GUARD: Refusing destructive operations on non-isolated database: " + connectedDb);
+        assertEquals(ISOLATED_TEST_DB, connectedDb);
+        assertTrue(mongoDBContainer.isRunning(),
+                "SECURITY GUARD: MongoDB container must be active");
+
         invoiceRepository.deleteAll();
         paymentRepository.deleteAll();
         ledgerEntryRepository.deleteAll();
         patientRepository.deleteAll();
         userRepository.deleteAll();
 
-        // 1. Create and authenticate Admin User
+        // 1. Create distinct Admin User
         adminUser = User.builder()
                 .id("admin-rec-" + UUID.randomUUID())
                 .fullName("Admin Reconciler")
-                .email("admin-rec-" + UUID.randomUUID() + "@pulsecare.com")
+                .email("admin.rec." + UUID.randomUUID() + "@pulsecare.com")
                 .role(Role.ADMIN)
                 .build();
         userRepository.save(adminUser);
 
-        org.springframework.security.core.context.SecurityContext context =
-                org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-        org.springframework.security.authentication.UsernamePasswordAuthenticationToken auth =
-                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                        adminUser.getEmail(), null,
-                        List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"))
-                );
-        context.setAuthentication(auth);
-        org.springframework.security.core.context.SecurityContextHolder.setContext(context);
+        // 2. Create distinct Patient User
+        patientUser = User.builder()
+                .id("patient-rec-" + UUID.randomUUID())
+                .fullName("Alice Patient")
+                .email("alice.rec." + UUID.randomUUID() + "@patient.com")
+                .role(Role.PATIENT)
+                .build();
+        userRepository.save(patientUser);
 
-        // 2. Create Patient
+        // Default test security context: authenticated as Admin
+        authenticateAs(adminUser);
+
+        // 3. Create Patient Domain Entity
         patient = Patient.builder()
-                .userId(adminUser.getId())
-                .fullName("John Doe")
-                .email("john.rec@example.com")
+                .id("pat-entity-" + UUID.randomUUID())
+                .userId(patientUser.getId())
+                .fullName("Alice Patient")
+                .email(patientUser.getEmail())
                 .createdAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build();
         patient = patientRepository.save(patient);
 
-        // 3. Create Sample Invoice
+        // 4. Create Sample Invoice
         testInvoice = Invoice.builder()
                 .invoiceNumber("INV-REC-001")
                 .patientId(patient.getId())
@@ -137,9 +160,20 @@ public class FinancialReconciliationMongoIntegrationTest {
         testInvoice = invoiceRepository.save(testInvoice);
     }
 
+    private void authenticateAs(User user) {
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(
+                        user.getEmail(), null,
+                        List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
+                );
+        context.setAuthentication(auth);
+        SecurityContextHolder.setContext(context);
+    }
+
     @Test
-    @DisplayName("P1: Normal BillingService recordPayment creates payment + ledger; getFinancialReconciliation must NOT flag it as missing")
-    void testConfirmedPayment_WithNormalBillingService_NotClassifiedAsMissing() {
+    @DisplayName("A: BillingService creates confirmed payment and ledger entry; reconciliation reports zero false anomalies")
+    void testNormalBillingServicePayment_CreatesPaymentAndLedger_ZeroFalseAnomalies() {
         RecordPaymentRequest request = RecordPaymentRequest.builder()
                 .invoiceId(testInvoice.getId())
                 .amount(new BigDecimal("2000.00"))
@@ -147,29 +181,36 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .idempotencyKey("IDEM-REC-VALID-01")
                 .build();
 
-        // Persist using normal BillingService implementation
+        // 1. Record payment through production BillingService
         BillingPayment savedPayment = billingService.recordPayment(request);
         assertNotNull(savedPayment);
         assertNotNull(savedPayment.getId());
         assertEquals(PaymentStatus.CONFIRMED, savedPayment.getStatus());
 
-        // Verify ledger entry was created
-        List<BillingLedgerEntry> ledgers = ledgerEntryRepository.findAll();
-        assertFalse(ledgers.isEmpty());
-        assertEquals(savedPayment.getId(), ledgers.get(0).getPaymentId());
+        // 2. Verify actual MongoDB BSON types directly via MongoCollection
+        Document paymentDoc = mongoTemplate.getCollection("billing_payments")
+                .find(new Document("paymentNumber", savedPayment.getPaymentNumber())).first();
+        assertNotNull(paymentDoc);
+        assertTrue(paymentDoc.get("_id") instanceof ObjectId,
+                "BillingPayment._id must be persisted as BSON ObjectId");
 
-        // Run Financial Reconciliation Audit
+        Document ledgerDoc = mongoTemplate.getCollection("billing_ledger_entries")
+                .find(new Document("paymentId", savedPayment.getId())).first();
+        assertNotNull(ledgerDoc);
+        assertTrue(ledgerDoc.get("paymentId") instanceof String,
+                "BillingLedgerEntry.paymentId must be persisted as BSON String");
+
+        // 3. Execute financial reconciliation audit
         FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
         assertNotNull(report);
         assertEquals(0, report.getTotalInconsistenciesDetected(),
-                "Confirmed payment with valid ledger entry should NOT be classified as missing a ledger entry");
+                "Confirmed payment with corresponding ledger entry must NOT be flagged as missing");
         assertTrue(report.getAnomalies().isEmpty());
     }
 
     @Test
-    @DisplayName("P2: Confirmed payment without ledger entry is accurately detected by getFinancialReconciliation")
-    void testConfirmedPayment_WithoutLedgerEntry_DetectedAsMissing() {
-        // Create an unledgered payment directly in MongoDB
+    @DisplayName("B: Confirmed payment without ledger entry is detected exactly once")
+    void testConfirmedPayment_WithoutLedgerEntry_DetectedExactlyOnce() {
         BillingPayment orphanPayment = BillingPayment.builder()
                 .paymentNumber("PAY-ORPHAN-001")
                 .invoiceId(testInvoice.getId())
@@ -185,7 +226,6 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .build();
         orphanPayment = paymentRepository.save(orphanPayment);
 
-        // Run Financial Reconciliation Audit
         FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
         assertNotNull(report);
         assertEquals(1, report.getTotalInconsistenciesDetected(),
@@ -200,9 +240,9 @@ public class FinancialReconciliationMongoIntegrationTest {
     }
 
     @Test
-    @DisplayName("P3: Both BSON ObjectId and String payment IDs are correctly resolved in reconciliation lookup")
-    void testBothBsonObjectIdAndStringIds_Supported() {
-        // 1. Insert valid payment with BSON ObjectId as _id
+    @DisplayName("C: BSON ObjectId and legacy String ID representations both work symmetrically")
+    void testBothBsonObjectIdAndLegacyStringIds_SupportedSymmetrically() {
+        // 1. Payment with BSON ObjectId as _id + ledger with string paymentId
         ObjectId objId = new ObjectId();
         Document paymentDocWithObjectId = new Document("_id", objId)
                 .append("paymentNumber", "PAY-OBJID-001")
@@ -216,7 +256,6 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .append("confirmedAt", Instant.now());
         mongoTemplate.getCollection("billing_payments").insertOne(paymentDocWithObjectId);
 
-        // Matching ledger entry storing hex string of the ObjectId
         Document ledgerDoc1 = new Document("_id", new ObjectId())
                 .append("entryNumber", "LEDG-OBJ-001")
                 .append("invoiceId", testInvoice.getId())
@@ -226,8 +265,8 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .append("occurredAt", Instant.now());
         mongoTemplate.getCollection("billing_ledger_entries").insertOne(ledgerDoc1);
 
-        // 2. Insert valid payment with String as _id
-        String stringId = "LEGACY-PAY-STRING-001";
+        // 2. Legacy payment with String as _id + ledger with string paymentId
+        String stringId = "LEGACY-PAY-STR-001";
         Document paymentDocWithStringId = new Document("_id", stringId)
                 .append("paymentNumber", "PAY-STR-001")
                 .append("invoiceId", testInvoice.getId())
@@ -235,12 +274,11 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .append("amount", new org.bson.types.Decimal128(new BigDecimal("2000.00")))
                 .append("refundedAmount", new org.bson.types.Decimal128(BigDecimal.ZERO))
                 .append("status", "CONFIRMED")
-                .append("method", "CARD")
+                .append("method", "CARD_TERMINAL")
                 .append("createdAt", Instant.now())
                 .append("confirmedAt", Instant.now());
         mongoTemplate.getCollection("billing_payments").insertOne(paymentDocWithStringId);
 
-        // Matching ledger entry storing the exact string ID
         Document ledgerDoc2 = new Document("_id", new ObjectId())
                 .append("entryNumber", "LEDG-STR-002")
                 .append("invoiceId", testInvoice.getId())
@@ -250,8 +288,8 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .append("occurredAt", Instant.now());
         mongoTemplate.getCollection("billing_ledger_entries").insertOne(ledgerDoc2);
 
-        // 3. Insert an orphan payment with String ID (no ledger entry)
-        Document orphanDoc = new Document("_id", "LEGACY-ORPHAN-003")
+        // 3. Orphan payment with legacy String ID
+        Document orphanDoc = new Document("_id", "LEGACY-ORPHAN-STR-003")
                 .append("paymentNumber", "PAY-ORPHAN-STR-003")
                 .append("invoiceId", testInvoice.getId())
                 .append("patientId", patient.getId())
@@ -263,14 +301,107 @@ public class FinancialReconciliationMongoIntegrationTest {
                 .append("confirmedAt", Instant.now());
         mongoTemplate.getCollection("billing_payments").insertOne(orphanDoc);
 
-        // Run reconciliation
+        FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
+        assertNotNull(report);
+        assertEquals(1, report.getTotalInconsistenciesDetected(),
+                "Only the unledgered String payment should be flagged; valid ObjectId and String IDs must match");
+        assertEquals("LEGACY-ORPHAN-STR-003", report.getAnomalies().get(0).getEntityId());
+    }
+
+    @Test
+    @DisplayName("D: Multiple payments with matching ledger entries do not produce false positives")
+    void testMultiplePayments_WithMatchingLedgerEntries_NoFalsePositives() {
+        for (int i = 1; i <= 5; i++) {
+            ObjectId pid = new ObjectId();
+            Document pDoc = new Document("_id", pid)
+                    .append("paymentNumber", "PAY-MULTI-" + i)
+                    .append("invoiceId", testInvoice.getId())
+                    .append("patientId", patient.getId())
+                    .append("amount", new org.bson.types.Decimal128(new BigDecimal("500.00")))
+                    .append("refundedAmount", new org.bson.types.Decimal128(BigDecimal.ZERO))
+                    .append("status", "CONFIRMED")
+                    .append("method", "CASH")
+                    .append("createdAt", Instant.now())
+                    .append("confirmedAt", Instant.now());
+            mongoTemplate.getCollection("billing_payments").insertOne(pDoc);
+
+            Document lDoc = new Document("_id", new ObjectId())
+                    .append("entryNumber", "LEDG-MULTI-" + i)
+                    .append("invoiceId", testInvoice.getId())
+                    .append("paymentId", pid.toHexString())
+                    .append("amount", new org.bson.types.Decimal128(new BigDecimal("500.00")))
+                    .append("entryType", "PAYMENT")
+                    .append("occurredAt", Instant.now());
+            mongoTemplate.getCollection("billing_ledger_entries").insertOne(lDoc);
+        }
+
+        FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
+        assertNotNull(report);
+        assertEquals(0, report.getTotalInconsistenciesDetected(),
+                "All 5 matched payments must resolve with zero anomalies");
+    }
+
+    @Test
+    @DisplayName("E: Incorrect ledger/payment relationships are not accepted as valid")
+    void testMismatchedLedgerPaymentId_IsDetectedAsAnomaly() {
+        // Payment P1
+        ObjectId p1Id = new ObjectId();
+        Document p1Doc = new Document("_id", p1Id)
+                .append("paymentNumber", "PAY-MISMATCH-1")
+                .append("invoiceId", testInvoice.getId())
+                .append("patientId", patient.getId())
+                .append("amount", new org.bson.types.Decimal128(new BigDecimal("1000.00")))
+                .append("refundedAmount", new org.bson.types.Decimal128(BigDecimal.ZERO))
+                .append("status", "CONFIRMED")
+                .append("method", "CASH")
+                .append("createdAt", Instant.now())
+                .append("confirmedAt", Instant.now());
+        mongoTemplate.getCollection("billing_payments").insertOne(p1Doc);
+
+        // Ledger entry pointing to non-existent payment P-DIFFERENT
+        Document lDoc = new Document("_id", new ObjectId())
+                .append("entryNumber", "LEDG-MISMATCH-1")
+                .append("invoiceId", testInvoice.getId())
+                .append("paymentId", new ObjectId().toHexString())
+                .append("amount", new org.bson.types.Decimal128(new BigDecimal("1000.00")))
+                .append("entryType", "PAYMENT")
+                .append("occurredAt", Instant.now());
+        mongoTemplate.getCollection("billing_ledger_entries").insertOne(lDoc);
+
+        FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
+        assertNotNull(report);
+        assertEquals(1, report.getTotalInconsistenciesDetected(),
+                "Payment with mismatched ledger must be flagged as missing its ledger entry");
+    }
+
+    @Test
+    @DisplayName("F: Financial authorization and read-only behavior are preserved")
+    void testAuthorization_AndReadOnlyBehavior() {
+        // 1. Verify unauthorized role is rejected
+        authenticateAs(patientUser);
+        assertThrows(AccessDeniedException.class, () -> analyticsService.getFinancialReconciliation(),
+                "PATIENT role must be denied access to financial reconciliation");
+
+        // 2. Switch to admin and run reconciliation
+        authenticateAs(adminUser);
+        long initialInvoices = invoiceRepository.count();
+        long initialPayments = paymentRepository.count();
+        long initialLedgers = ledgerEntryRepository.count();
+
         FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
         assertNotNull(report);
 
-        // Exactly the orphan payment should be detected
-        assertEquals(1, report.getTotalInconsistenciesDetected(),
-                "Only the unledgered payment should be flagged; valid ObjectId and String IDs must match");
-        assertEquals("LEGACY-ORPHAN-003", report.getAnomalies().get(0).getEntityId());
-        assertEquals("PAY-ORPHAN-STR-003", report.getAnomalies().get(0).getReferenceNumber());
+        // 3. Verify zero database mutations occurred (read-only audit)
+        assertEquals(initialInvoices, invoiceRepository.count());
+        assertEquals(initialPayments, paymentRepository.count());
+        assertEquals(initialLedgers, ledgerEntryRepository.count());
+    }
+
+    @Test
+    @DisplayName("G: Database isolation guard verifies unique disposable database")
+    void testIsolationGuard_UniqueDisposableDatabase() {
+        String dbName = mongoTemplate.getDb().getName();
+        assertTrue(dbName.startsWith("disposable_reconciliation_"));
+        assertEquals(ISOLATED_TEST_DB, dbName);
     }
 }

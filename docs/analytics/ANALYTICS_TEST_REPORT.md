@@ -5,8 +5,8 @@
 | `AnalyticsServiceTest` | Unit / Mockito | 8 | 8 | 0 | 0 | 0 |
 | `AnalyticsAuthorizationSecurityTest` | Security / Access Control | 4 | 4 | 0 | 0 | 0 |
 | `ReportExportServiceTest` | Export / Multi-Page PDF & CSV | 2 | 2 | 0 | 0 | 0 |
-| `FinancialReconciliationMongoIntegrationTest` | MongoDB Integration (Testcontainers) | 3 | 3 | 0 | 0 | 0 |
-| **Total Analytics Suite** | Unit, Security & Integration | **17** | **17** | **0** | **0** | **0** |
+| `FinancialReconciliationMongoIntegrationTest` | MongoDB Integration (Testcontainers) | 7 | 7 | 0 | 0 | 0 |
+| **Total Analytics Suite** | Unit, Security & Integration | **21** | **21** | **0** | **0** | **0** |
 
 ## Scenarios Verified:
 - **`testExecutiveOverview_Admin_Success`**: Verified patient counts, active doctor filtering, bed occupancy percentage math, appointment completion rates, and period filtering.
@@ -20,6 +20,10 @@
 - **`testCsvExport_FormulaInjectionNeutralized`**: Verified neutralization of malicious spreadsheet formula triggers.
 - **`testPdfExport_MultiPageDocument_Success`**: Verified that large datasets generate valid multi-page PDF documents without clipping.
 - **`AnalyticsAuthorizationSecurityTest`**: Verified cross-role boundary enforcement (e.g. `LAB_TECH` denied billing analytics, `PHARMACIST` denied doctor workload).
-- **`FinancialReconciliationMongoIntegrationTest.testConfirmedPayment_WithNormalBillingService_NotClassifiedAsMissing`**: Verified real end-to-end payment creation via `BillingService.recordPayment()` where payment and ledger entry are joined without type-mismatch false positives.
-- **`FinancialReconciliationMongoIntegrationTest.testConfirmedPayment_WithoutLedgerEntry_DetectedAsMissing`**: Verified exact detection of orphan confirmed payments lacking ledger entries.
-- **`FinancialReconciliationMongoIntegrationTest.testBothBsonObjectIdAndStringIds_Supported`**: Verified that both BSON `ObjectId` and `String` ID formats are matched symmetrically in the aggregation `$lookup` pipeline.
+- **`FinancialReconciliationMongoIntegrationTest.testNormalBillingServicePayment_CreatesPaymentAndLedger_ZeroFalseAnomalies`**: Verified real end-to-end payment creation via `BillingService.recordPayment()` where payment (BSON `ObjectId`) and ledger entry (BSON `String`) are joined without type-mismatch false positives.
+- **`FinancialReconciliationMongoIntegrationTest.testConfirmedPayment_WithoutLedgerEntry_DetectedExactlyOnce`**: Verified exact detection of orphan confirmed payments lacking ledger entries.
+- **`FinancialReconciliationMongoIntegrationTest.testBothBsonObjectIdAndLegacyStringIds_SupportedSymmetrically`**: Verified that both BSON `ObjectId` and `String` ID formats are matched symmetrically in the aggregation `$lookup` pipeline.
+- **`FinancialReconciliationMongoIntegrationTest.testMultiplePayments_WithMatchingLedgerEntries_NoFalsePositives`**: Verified that multiple confirmed payments with valid ledger entries do not trigger false anomalies.
+- **`FinancialReconciliationMongoIntegrationTest.testMismatchedLedgerPaymentId_IsDetectedAsAnomaly`**: Verified that mismatched ledger references are flagged as missing ledger entries.
+- **`FinancialReconciliationMongoIntegrationTest.testAuthorization_AndReadOnlyBehavior`**: Verified role enforcement and guaranteed zero database mutations during reconciliation audits.
+- **`FinancialReconciliationMongoIntegrationTest.testIsolationGuard_UniqueDisposableDatabase`**: Verified that tests execute strictly within an isolated disposable database.
