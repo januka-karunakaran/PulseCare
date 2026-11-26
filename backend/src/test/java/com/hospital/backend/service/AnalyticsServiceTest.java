@@ -15,6 +15,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.Aggregation;
 import org.springframework.data.mongodb.core.aggregation.AggregationResults;
@@ -22,15 +24,14 @@ import org.springframework.data.mongodb.core.query.Query;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class AnalyticsServiceTest {
 
     @Mock
@@ -93,26 +94,29 @@ class AnalyticsServiceTest {
         adminUser = User.builder().id("admin-1").email("admin@pulsecare.com").role(Role.ADMIN).build();
         doctorUser = User.builder().id("doc-user-1").email("doctor@pulsecare.com").role(Role.DOCTOR).build();
         patientUser = User.builder().id("pat-1").email("patient@pulsecare.com").role(Role.PATIENT).build();
+
+        AggregationResults<Document> emptyRes = new AggregationResults<>(List.of(), new Document());
+        lenient().when(mongoTemplate.aggregate(any(Aggregation.class), anyString(), eq(Document.class))).thenReturn(emptyRes);
     }
 
     @Test
-    @DisplayName("A1-A3: Executive Overview returns accurate metrics for ADMIN")
+    @DisplayName("A1-A3: Executive Overview returns accurate metrics for ADMIN with database-side aggregations")
     void testExecutiveOverview_Admin_Success() {
         when(authz.getCurrentUser()).thenReturn(adminUser);
         when(patientRepository.count()).thenReturn(100L);
         when(doctorRepository.count()).thenReturn(10L);
-        when(doctorRepository.findAll()).thenReturn(List.of(
-                Doctor.builder().id("d1").status("ACTIVE").build(),
-                Doctor.builder().id("d2").status("INACTIVE").build()
-        ));
-        when(bedRepository.findAll()).thenReturn(List.of(
-                Bed.builder().id("b1").status("OCCUPIED").build(),
-                Bed.builder().id("b2").status("AVAILABLE").build()
-        ));
-        when(mongoTemplate.find(any(Query.class), eq(Appointment.class))).thenReturn(List.of(
-                Appointment.builder().id("a1").status("COMPLETED").build(),
-                Appointment.builder().id("a2").status("CANCELLED").build()
-        ));
+        when(mongoTemplate.count(any(Query.class), eq(Doctor.class))).thenReturn(8L);
+
+        // Bed aggregation result
+        Document bedDoc = new Document("total", 2L).append("occupied", 1L).append("available", 1L).append("maintenance", 0L);
+        AggregationResults<Document> bedAggRes = new AggregationResults<>(List.of(bedDoc), new Document());
+
+        // Appointment aggregation result
+        Document apptDoc = new Document("total", 2L).append("completed", 1L).append("booked", 0L).append("cancelled", 1L).append("pending", 0L);
+        AggregationResults<Document> apptAggRes = new AggregationResults<>(List.of(apptDoc), new Document());
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("beds"), eq(Document.class))).thenReturn(bedAggRes);
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class))).thenReturn(apptAggRes);
 
         AnalyticsFilterRequest req = AnalyticsFilterRequest.builder()
                 .dateRange(ReportingDateRange.LAST_30_DAYS)
@@ -123,7 +127,7 @@ class AnalyticsServiceTest {
         assertNotNull(overview);
         assertEquals(100L, overview.getTotalRegisteredPatients());
         assertEquals(10L, overview.getTotalDoctors());
-        assertEquals(1L, overview.getActiveDoctors());
+        assertEquals(8L, overview.getActiveDoctors());
         assertEquals(2L, overview.getTotalBeds());
         assertEquals(1L, overview.getOccupiedBeds());
         assertEquals(50.0, overview.getBedOccupancyRate());
@@ -148,11 +152,15 @@ class AnalyticsServiceTest {
         when(doctorRepository.findByUserId("doc-user-1")).thenReturn(Optional.of(
                 Doctor.builder().id("doc-entity-1").userId("doc-user-1").fullName("Dr. Smith").build()
         ));
-        when(mongoTemplate.find(any(Query.class), eq(Appointment.class))).thenReturn(List.of(
-                Appointment.builder().id("a1").doctorId("doc-entity-1").status("COMPLETED").build()
-        ));
+
+        Document apptDoc = new Document("total", 1L).append("completed", 1L).append("booked", 0L).append("cancelled", 0L).append("pending", 0L);
+        AggregationResults<Document> apptAggRes = new AggregationResults<>(List.of(apptDoc), new Document());
         AggregationResults<Document> emptyAggRes = new AggregationResults<>(List.of(), new Document());
-        when(mongoTemplate.aggregate(any(Aggregation.class), anyString(), eq(Document.class))).thenReturn(emptyAggRes);
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class)))
+                .thenReturn(apptAggRes)
+                .thenReturn(emptyAggRes)
+                .thenReturn(emptyAggRes);
 
         AnalyticsFilterRequest req = AnalyticsFilterRequest.builder()
                 .dateRange(ReportingDateRange.LAST_7_DAYS)
@@ -214,7 +222,7 @@ class AnalyticsServiceTest {
     }
 
     @Test
-    @DisplayName("E14: Reconciliation detects paid invoices with positive outstanding balances")
+    @DisplayName("E14: Reconciliation detects paid invoices with positive outstanding balances and sets completeness")
     void testFinancialReconciliation_DetectsAnomaly() {
         when(authz.getCurrentUser()).thenReturn(adminUser);
 
@@ -225,15 +233,107 @@ class AnalyticsServiceTest {
                 .outstandingAmount(new BigDecimal("25.00"))
                 .build();
 
-        when(invoiceRepository.findAll()).thenReturn(List.of(invalidInvoice));
-        when(paymentRepository.findAll()).thenReturn(List.of());
-        when(refundRepository.count()).thenReturn(0L);
+        when(mongoTemplate.find(any(Query.class), eq(Invoice.class))).thenReturn(List.of(invalidInvoice));
+        when(mongoTemplate.find(any(Query.class), eq(BillingPayment.class))).thenReturn(List.of());
+        when(mongoTemplate.count(any(Query.class), eq(Invoice.class))).thenReturn(1L);
+        when(mongoTemplate.count(any(Query.class), eq(BillingPayment.class))).thenReturn(0L);
+
+        AggregationResults<Document> emptyAggRes = new AggregationResults<>(List.of(), new Document());
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("billing_payments"), eq(Document.class))).thenReturn(emptyAggRes);
 
         FinancialReconciliationDashboardDTO report = analyticsService.getFinancialReconciliation();
 
         assertNotNull(report);
         assertEquals(1, report.getTotalInconsistenciesDetected());
+        assertEquals(1, report.getReturnedAnomaliesCount());
+        assertFalse(report.isTruncated());
         assertEquals("PAID_STATUS_WITH_OUTSTANDING_BALANCE", report.getAnomalies().get(0).getAnomalyType());
         assertEquals(new BigDecimal("25.00"), report.getAnomalies().get(0).getActualAmount());
+    }
+
+    @Test
+    @DisplayName("B1: Patient registration timestamp fallback distinguishes complete, partial, and unavailable")
+    void testPatientRegistrationCompleteness() {
+        when(authz.getCurrentUser()).thenReturn(adminUser);
+        when(patientRepository.count()).thenReturn(100L);
+
+        // Case 1: No patients have timestamps -> UNAVAILABLE
+        when(mongoTemplate.count(argThat(q -> q != null && q.getQueryObject().containsKey("createdAt") && !q.getQueryObject().containsKey("$gte")), eq(Patient.class)))
+                .thenReturn(0L);
+
+        ExecutiveOverviewDTO overview = analyticsService.getExecutiveOverview(AnalyticsFilterRequest.builder().build());
+        assertNotNull(overview);
+        assertNull(overview.getNewlyRegisteredPatients());
+        assertEquals("UNAVAILABLE", overview.getRegistrationTimestampStatus());
+
+        // Case 2: Partial patients have timestamps -> PARTIAL_HISTORICAL_DATA
+        when(mongoTemplate.count(argThat(q -> q != null && q.getQueryObject().containsKey("createdAt") && !q.getQueryObject().containsKey("$gte")), eq(Patient.class)))
+                .thenReturn(40L);
+        when(mongoTemplate.count(argThat(q -> q != null && q.getQueryObject().containsKey("createdAt") && q.getQueryObject().get("createdAt") instanceof Document d && d.containsKey("$gte")), eq(Patient.class)))
+                .thenReturn(5L);
+
+        overview = analyticsService.getExecutiveOverview(AnalyticsFilterRequest.builder().build());
+        assertEquals(5L, overview.getNewlyRegisteredPatients());
+        assertEquals("PARTIAL_HISTORICAL_DATA", overview.getRegistrationTimestampStatus());
+    }
+
+    @Test
+    @DisplayName("C1: Consultations count combines completed appointments and finalized encounters deduplicated")
+    void testConsultationsAggregation_Deduplication() {
+        when(authz.getCurrentUser()).thenReturn(adminUser);
+
+        // Appt: patient-1 has completed appt
+        Document apptDoc = new Document("_id", "patient-1");
+        AggregationResults<Document> apptRes = new AggregationResults<>(List.of(apptDoc), new Document());
+
+        // Encounter: patient-1 AND patient-2 have signed encounters
+        Document encDoc1 = new Document("_id", "patient-1");
+        Document encDoc2 = new Document("_id", "patient-2");
+        AggregationResults<Document> encRes = new AggregationResults<>(List.of(encDoc1, encDoc2), new Document());
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("appointments"), eq(Document.class))).thenReturn(apptRes);
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("clinical_encounters"), eq(Document.class))).thenReturn(encRes);
+
+        // Patient resolution
+        Patient p1 = Patient.builder().id("patient-1").fullName("Alice").build();
+        Patient p2 = Patient.builder().id("patient-2").fullName("Bob").build();
+        when(mongoTemplate.find(any(Query.class), eq(Patient.class))).thenReturn(List.of(p1, p2));
+
+        ExecutiveOverviewDTO overview = analyticsService.getExecutiveOverview(AnalyticsFilterRequest.builder().build());
+        assertNotNull(overview);
+        // patient-1 appears in both sources, patient-2 in encounters -> total distinct should be exactly 2
+        assertEquals(2L, overview.getActivePatientsPeriod());
+    }
+
+    @Test
+    @DisplayName("D1: Pharmacy stock aggregates by unit preserving decimal precision and avoiding mixed-unit sum")
+    void testPharmacyStockByUnit_DecimalPreserved() {
+        when(authz.getCurrentUser()).thenReturn(adminUser);
+        when(medicineRepository.count()).thenReturn(5L);
+
+        // Unit aggregation returns TABLETS (100.0) and ML (25.5)
+        Document tabDoc = new Document("_id", "TABLETS").append("totalUnitQuantity", 100.0);
+        Document mlDoc = new Document("_id", "ML").append("totalUnitQuantity", 25.5);
+        AggregationResults<Document> unitRes = new AggregationResults<>(List.of(tabDoc, mlDoc), new Document());
+
+        // Distinct medicine aggregation returns 2
+        Document medDoc1 = new Document("_id", "med-1");
+        Document medDoc2 = new Document("_id", "med-2");
+        AggregationResults<Document> distMedsRes = new AggregationResults<>(List.of(medDoc1, medDoc2), new Document());
+
+        when(mongoTemplate.aggregate(any(Aggregation.class), eq("pharmacy_stock_batches"), eq(Document.class)))
+                .thenReturn(unitRes)
+                .thenReturn(distMedsRes);
+
+        when(mongoTemplate.count(any(Query.class), eq(PharmacyStockBatch.class))).thenReturn(4L);
+
+        PharmacyAnalyticsDTO dto = analyticsService.getPharmacyAnalytics(AnalyticsFilterRequest.builder().build());
+
+        assertNotNull(dto);
+        assertEquals(4L, dto.getAvailableBatchesCount());
+        assertEquals(2L, dto.getDistinctMedicinesInStock());
+        assertNotNull(dto.getStockByUnit());
+        assertEquals(100.0, dto.getStockByUnit().get("TABLETS"));
+        assertEquals(25.5, dto.getStockByUnit().get("ML"));
     }
 }

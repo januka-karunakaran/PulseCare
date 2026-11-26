@@ -1,23 +1,29 @@
-# Feature 02.8 - Hospital Reporting, Operational Analytics and Financial Reconciliation Report
+# Feature 02.8 & 02.8.1 - Hospital Reporting, Operational Analytics and Financial Reconciliation Report
 
 ## 1. Executive Summary
-Feature 02.8 delivers an enterprise-grade, read-only operational analytics, hospital executive dashboard, and financial reconciliation platform for PulseCare 2.0. The platform unifies data across 9 operational subsystems (Patients, Doctors, Appointments, Beds, Clinical Encounters, Laboratory, Pharmacy, Billing, and Notifications) using MongoDB database-side aggregation pipelines without mutating transactional records or generating fabricated metrics.
+Feature 02.8 and Hotfix 02.8.1 deliver an enterprise-grade, read-only operational analytics, executive dashboard, and financial reconciliation engine for PulseCare 2.0. The implementation unifies data across 9 operational subsystems (Patients, Doctors, Appointments, Beds, Clinical Encounters, Laboratory, Pharmacy, Billing, and Notifications) using MongoDB database-side aggregation pipelines and bounded queries without mutating transactional records or fabricating metrics.
 
-## 2. Key Architecture Components
-- **`AnalyticsService` & `AnalyticsServiceImpl`**: Encapsulates bounded, optimized database aggregation queries across all 9 domain subsystems.
-- **`AnalyticsController`**: Exposes secure REST endpoints with role-based `@PreAuthorize` guards for executive overview, appointment trends, doctor workloads, bed utilization, laboratory throughput, pharmacy stock health, and billing collections.
-- **`ReportExportService` & `ReportExportServiceImpl`**: Generates sanitized CSV (neutralizing formula injection) and PDF exports with audit logging via `ClinicalAuditService`.
-- **`AnalyticsDateUtils`**: Provides deterministic UTC boundary calculations for reporting filters (`TODAY`, `YESTERDAY`, `LAST_7_DAYS`, `LAST_30_DAYS`, `THIS_MONTH`, `LAST_MONTH`, `CUSTOM_RANGE`) aligned to `Asia/Colombo`.
-- **Frontend Analytics**: Responsive Next.js 16 / React 19 dashboard at `/admin/analytics` featuring Recharts visualizations, key performance indicators, date range filters, and export capabilities.
-
-## 3. Financial Integrity & Reconciliation
-- Strict distinction between Billed charges and Cash Collections.
-- Enforced `BigDecimal` precision matching Feature 02.7 Decimal128 BSON storage.
-- Automated read-only reconciliation detecting:
-  1. Invoices marked `PAID` with positive outstanding balances.
-  2. Confirmed payments missing double-entry ledger records.
-  3. Cumulative over-refunded payments.
-
-## 4. Test Verification
-- All 9 new analytics unit and security tests passed with 0 failures, 0 errors, and 0 skipped.
-- Frontend Next.js production build succeeded with 0 errors across 47 static/dynamic routes.
+## 2. Key Architecture Components & Hotfix Enhancements
+- **Patient Registration KPI Completeness**:
+  - `createdAt` and `updatedAt` timestamps generated upon patient signup, admin registration, and profile creation.
+  - Profile updates preserve original `createdAt` and only update `updatedAt`.
+  - Date boundary filtering against `createdAt` exposes explicit completeness status: `COMPLETE`, `PARTIAL_HISTORICAL_DATA`, or `UNAVAILABLE`.
+- **Deduplicated Consultations KPI**:
+  - `countPatientsWithConsultations` combines qualifying completed appointments and finalized clinical encounters (`SIGNED`, `AMENDED`).
+  - Resolves canonical `Patient.id` and legacy `User.id` safely, deduplicating patients across both sources.
+- **Unit-Safe Pharmacy Stock Aggregation**:
+  - Aggregates available batch quantities grouped strictly by `stockUnit` (`stockByUnit: Map<String, Double>`).
+  - Eliminates misleading scalar summation across disparate units (e.g. TABLETS + VIALS + ML).
+  - Exposes `availableBatchesCount` and `distinctMedicinesInStock`.
+  - Missing/blank units are categorized as `UNKNOWN`.
+- **Financial Reconciliation Integrity & Pagination**:
+  - Automated detection of:
+    1. Invoices marked `PAID` with positive outstanding balances.
+    2. Confirmed payments missing double-entry ledger records (optimized via `$lookup`).
+    3. Cumulative over-refunded payments.
+  - Distinguishes `examinedRecordsCount`, `totalInconsistenciesDetected` (true collection-wide total), and `returnedAnomaliesCount` with explicit `truncated` and `hasMore` flags.
+- **Multi-Page Structured PDF & Formula-Sanitized CSV Exports**:
+  - Real table headers, alternating borders, automatic page breaks, and repeated column headers on subsequent pages.
+  - Full spreadsheet formula injection sanitization escaping `=`, `+`, `-`, `@`, `\t`, `\r`.
+- **Asymptotic Query Complexity**:
+  - Replaced arbitrary millisecond claims with formal asymptotic query analysis. Benchmarks are marked as NOT MEASURED to ensure zero unsupported latency claims.

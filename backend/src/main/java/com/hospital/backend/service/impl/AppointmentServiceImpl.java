@@ -100,12 +100,15 @@ public class AppointmentServiceImpl implements AppointmentService {
                     .filter(user -> user.getRole() == Role.PATIENT)
                     .orElseThrow(() -> new BadRequestException("Patient account not found"));
 
+            Instant now = Instant.now();
             Patient patient = Patient.builder()
                     .userId(patientUser.getId())
                     .fullName(patientUser.getFullName())
                     .email(patientUser.getEmail())
                     .phone(patientUser.getPhoneNumber())
                     .address(patientUser.getAddress())
+                    .createdAt(now)
+                    .updatedAt(now)
                     .build();
             return patientRepository.save(patient);
         });

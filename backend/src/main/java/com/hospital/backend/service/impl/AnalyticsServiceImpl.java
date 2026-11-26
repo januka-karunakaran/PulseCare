@@ -62,37 +62,31 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         AnalyticsDateUtils.DateBoundaries boundaries = AnalyticsDateUtils.resolveBoundaries(
                 filter.getDateRange(), filter.getStartDate(), filter.getEndDate(), filter.getTimezone());
 
-        // 1. Patient KPIs
+        // 1. Patient KPIs (Section 2: Distinguish total, new, and consultations)
         long totalPatients = patientRepository.count();
-        long newPatients = countNewPatients(boundaries);
+        PatientCountResult patientCounts = countNewPatients(boundaries);
+        long activePatientsPeriod = countPatientsWithConsultations(boundaries);
 
         // 2. Doctor KPIs
         long totalDoctors = doctorRepository.count();
-        long activeDoctors = doctorRepository.findAll().stream()
-                .filter(d -> "ACTIVE".equalsIgnoreCase(d.getStatus()))
-                .count();
+        long activeDoctors = mongoTemplate.count(Query.query(Criteria.where("status").is("ACTIVE")), Doctor.class);
 
-        // 3. Appointment KPIs
+        // 3. Appointment KPIs (Section 3: Database-side aggregation)
         LocalDate todayDate = LocalDate.now(boundaries.zoneId());
         long apptsToday = countAppointmentsForDate(todayDate.toString());
         AppointmentPeriodCounts apptCounts = aggregateAppointmentsInPeriod(boundaries, null);
 
-        // 4. Bed KPIs
-        List<Bed> allBeds = bedRepository.findAll();
-        long totalBeds = allBeds.size();
-        long occupiedBeds = allBeds.stream().filter(b -> "OCCUPIED".equalsIgnoreCase(b.getStatus())).count();
-        long availableBeds = allBeds.stream().filter(b -> "AVAILABLE".equalsIgnoreCase(b.getStatus())).count();
-        long maintBeds = allBeds.stream().filter(b -> "MAINTENANCE".equalsIgnoreCase(b.getStatus())).count();
-        double bedOccRate = totalBeds > 0 ? ((double) occupiedBeds / totalBeds) * 100.0 : 0.0;
+        // 4. Bed KPIs (Section 4: Database-side aggregation)
+        BedStats bedStats = aggregateBedStatistics();
 
-        // 5. Lab KPIs
+        // 5. Lab KPIs (Section 5: Real specimen rejection & orders)
         long totalLabOrders = countLabOrders(boundaries);
         long pendingLabOrders = countPendingLabOrders();
         long specimensCollected = countSpecimensCollected(boundaries);
         long releasedResults = countReleasedLabResults(boundaries);
 
-        // 6. Pharmacy KPIs
-        long activeMeds = medicineRepository.count();
+        // 6. Pharmacy KPIs (Section 6: Active flag, available batches, unit breakdown)
+        long activeMeds = countActiveMedicines();
         long lowStockCount = countLowStockMedicines();
         long nearExpiryCount = countNearExpiryBatches(boundaries.zoneId());
         long expiredCount = countExpiredBatches();
@@ -107,8 +101,9 @@ public class AnalyticsServiceImpl implements AnalyticsService {
 
         return ExecutiveOverviewDTO.builder()
                 .totalRegisteredPatients(totalPatients)
-                .newlyRegisteredPatients(newPatients)
-                .activePatientsPeriod(newPatients)
+                .newlyRegisteredPatients(patientCounts.newCount)
+                .registrationTimestampStatus(patientCounts.status)
+                .activePatientsPeriod(activePatientsPeriod)
                 .totalDoctors(totalDoctors)
                 .activeDoctors(activeDoctors)
                 .appointmentsToday(apptsToday)
@@ -117,11 +112,11 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                 .cancelledAppointmentsPeriod(apptCounts.cancelled)
                 .pendingAppointmentsPeriod(apptCounts.pending)
                 .appointmentCompletionRate(apptCounts.completionRate)
-                .totalBeds(totalBeds)
-                .occupiedBeds(occupiedBeds)
-                .availableBeds(availableBeds)
-                .maintenanceBeds(maintBeds)
-                .bedOccupancyRate(roundDouble(bedOccRate))
+                .totalBeds(bedStats.total)
+                .occupiedBeds(bedStats.occupied)
+                .availableBeds(bedStats.available)
+                .maintenanceBeds(bedStats.maintenance)
+                .bedOccupancyRate(bedStats.occupancyRate)
                 .totalLabOrdersPeriod(totalLabOrders)
                 .pendingLabOrders(pendingLabOrders)
                 .specimensCollectedPeriod(specimensCollected)
@@ -200,20 +195,31 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         AppointmentPeriodCounts counts = aggregateAppointmentsInPeriod(boundaries, targetDoctorId);
         List<AppointmentAnalyticsDTO.DailyMetricPoint> dailyTrends = aggregateDailyAppointmentTrends(boundaries, targetDoctorId);
 
-        // Encounter counts
+        // Encounter counts (canonical doctorId and legacy userId matching)
+        Criteria encounterCriteria = new Criteria().orOperator(
+                Criteria.where("doctorId").is(targetDoctorId),
+                Criteria.where("doctorId").is(doctor.getUserId())
+        );
         long encountersStarted = mongoTemplate.count(
-                Query.query(Criteria.where("doctorId").is(targetDoctorId)
-                        .and("visitStartedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())),
+                Query.query(new Criteria().andOperator(
+                        encounterCriteria,
+                        Criteria.where("visitStartedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())
+                )),
                 ClinicalEncounter.class
         );
         long encountersFinalized = mongoTemplate.count(
-                Query.query(Criteria.where("doctorId").is(targetDoctorId)
-                        .and("status").in(List.of(EncounterStatus.SIGNED, EncounterStatus.AMENDED))
-                        .and("visitStartedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())),
+                Query.query(new Criteria().andOperator(
+                        encounterCriteria,
+                        Criteria.where("status").in(List.of(EncounterStatus.SIGNED, EncounterStatus.AMENDED)),
+                        Criteria.where("visitStartedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())
+                )),
                 ClinicalEncounter.class
         );
         long pendingDrafts = mongoTemplate.count(
-                Query.query(Criteria.where("doctorId").is(targetDoctorId).and("status").is(EncounterStatus.DRAFT)),
+                Query.query(new Criteria().andOperator(
+                        encounterCriteria,
+                        Criteria.where("status").is(EncounterStatus.DRAFT)
+                )),
                 ClinicalEncounter.class
         );
 
@@ -243,7 +249,8 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                 filter.getDateRange(), filter.getStartDate(), filter.getEndDate(), filter.getTimezone());
 
         long totalPatients = patientRepository.count();
-        long newPatients = countNewPatients(boundaries);
+        PatientCountResult patientCounts = countNewPatients(boundaries);
+        long patientsWithConsultations = countPatientsWithConsultations(boundaries);
 
         // Aggregate demographic statistics
         Map<String, Long> genderMap = new HashMap<>();
@@ -269,8 +276,9 @@ public class AnalyticsServiceImpl implements AnalyticsService {
 
         return PatientOperationsDTO.builder()
                 .totalRegisteredPatients(totalPatients)
-                .newRegistrationsPeriod(newPatients)
-                .patientsWithConsultations(newPatients)
+                .newRegistrationsPeriod(patientCounts.newCount)
+                .registrationTimestampStatus(patientCounts.status)
+                .patientsWithConsultations(patientsWithConsultations)
                 .genderDistribution(genderMap)
                 .bloodGroupDistribution(bloodMap)
                 .registrationTrends(Collections.emptyList())
@@ -281,31 +289,41 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     @Override
     public BedUtilizationDTO getBedUtilization() {
         verifyAdminAccess();
-        List<Bed> beds = bedRepository.findAll();
-        long total = beds.size();
-        long available = beds.stream().filter(b -> "AVAILABLE".equalsIgnoreCase(b.getStatus())).count();
-        long occupied = beds.stream().filter(b -> "OCCUPIED".equalsIgnoreCase(b.getStatus())).count();
-        long maint = beds.stream().filter(b -> "MAINTENANCE".equalsIgnoreCase(b.getStatus())).count();
-        double occRate = total > 0 ? ((double) occupied / total) * 100.0 : 0.0;
+        BedStats stats = aggregateBedStatistics();
 
-        Map<String, Long> statusDist = beds.stream()
-                .filter(b -> b.getStatus() != null)
-                .collect(Collectors.groupingBy(Bed::getStatus, Collectors.counting()));
+        Aggregation statusAgg = newAggregation(
+                group("status").count().as("count")
+        );
+        Map<String, Long> statusDist = new HashMap<>();
+        for (Document d : mongoTemplate.aggregate(statusAgg, "beds", Document.class).getMappedResults()) {
+            Object k = d.get("_id");
+            if (k != null) statusDist.put(k.toString(), ((Number) d.get("count")).longValue());
+        }
 
-        Map<String, Long> typeDist = beds.stream()
-                .filter(b -> b.getType() != null)
-                .collect(Collectors.groupingBy(Bed::getType, Collectors.counting()));
+        Aggregation typeAgg = newAggregation(
+                group("type").count().as("count")
+        );
+        Map<String, Long> typeDist = new HashMap<>();
+        for (Document d : mongoTemplate.aggregate(typeAgg, "beds", Document.class).getMappedResults()) {
+            Object k = d.get("_id");
+            if (k != null) typeDist.put(k.toString(), ((Number) d.get("count")).longValue());
+        }
 
-        Map<String, Long> wardDist = beds.stream()
-                .filter(b -> b.getWard() != null)
-                .collect(Collectors.groupingBy(Bed::getWard, Collectors.counting()));
+        Aggregation wardAgg = newAggregation(
+                group("ward").count().as("count")
+        );
+        Map<String, Long> wardDist = new HashMap<>();
+        for (Document d : mongoTemplate.aggregate(wardAgg, "beds", Document.class).getMappedResults()) {
+            Object k = d.get("_id");
+            if (k != null) wardDist.put(k.toString(), ((Number) d.get("count")).longValue());
+        }
 
         return BedUtilizationDTO.builder()
-                .totalBeds(total)
-                .availableBeds(available)
-                .occupiedBeds(occupied)
-                .maintenanceBeds(maint)
-                .occupancyRate(roundDouble(occRate))
+                .totalBeds(stats.total)
+                .availableBeds(stats.available)
+                .occupiedBeds(stats.occupied)
+                .maintenanceBeds(stats.maintenance)
+                .occupancyRate(stats.occupancyRate)
                 .statusDistribution(statusDist)
                 .typeDistribution(typeDist)
                 .wardDistribution(wardDist)
@@ -322,16 +340,19 @@ public class AnalyticsServiceImpl implements AnalyticsService {
 
         long totalOrders = countLabOrders(boundaries);
         long pendingCollection = mongoTemplate.count(
-                Query.query(Criteria.where("status").is(LabOrderStatus.ORDERED)
+                Query.query(Criteria.where("status").in(List.of(LabOrderStatus.ORDERED, LabOrderStatus.COLLECTION_PENDING))
                         .and("orderedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())),
                 LabOrder.class
         );
         long specimensCollected = countSpecimensCollected(boundaries);
+
+        // Section 5: Real specimen rejection from LabSpecimen collection
         long specimensRejected = mongoTemplate.count(
-                Query.query(Criteria.where("status").is(LabOrderStatus.CANCELLED)
-                        .and("cancellationReason").regex("REJECT", "i")),
-                LabOrder.class
+                Query.query(Criteria.where("collectionStatus").is(SpecimenStatus.REJECTED)
+                        .and("rejectedAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())),
+                LabSpecimen.class
         );
+
         long resultsEntered = mongoTemplate.count(
                 Query.query(Criteria.where("workflowStatus").is(LabResultWorkflowStatus.ENTERED)
                         .and("createdAt").gte(boundaries.startInclusive()).lt(boundaries.endExclusive())),
@@ -411,7 +432,7 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         AnalyticsDateUtils.DateBoundaries boundaries = AnalyticsDateUtils.resolveBoundaries(
                 filter.getDateRange(), filter.getStartDate(), filter.getEndDate(), filter.getTimezone());
 
-        long activeMeds = medicineRepository.count();
+        long activeMeds = countActiveMedicines();
         long lowStockCount = countLowStockMedicines();
         long nearExpiryCount = countNearExpiryBatches(boundaries.zoneId());
         long expiredCount = countExpiredBatches();
@@ -427,28 +448,53 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                 PharmacyDispense.class
         );
 
-        // Sum available quantity across AVAILABLE batches
-        Aggregation availStockAgg = newAggregation(
-                match(Criteria.where("status").is(BatchStatus.AVAILABLE)),
-                group().sum("quantityAvailable").as("totalAvailable")
+        // Section 6: Exclude expired batches based on expiryDate, exclude quarantined/recalled batches, and group by stockUnit
+        Instant now = Instant.now();
+        Criteria availableBatchCriteria = Criteria.where("status").is(BatchStatus.AVAILABLE)
+                .and("expiryDate").gt(now)
+                .and("quantityAvailable").gt(0.0);
+
+        Aggregation unitAgg = newAggregation(
+                match(availableBatchCriteria),
+                group("stockUnit").sum("quantityAvailable").as("totalUnitQuantity")
         );
-        AggregationResults<Document> availRes = mongoTemplate.aggregate(availStockAgg, "pharmacy_stock_batches", Document.class);
-        long availStockTotal = 0;
-        if (!availRes.getMappedResults().isEmpty()) {
-            Object val = availRes.getMappedResults().get(0).get("totalAvailable");
-            if (val instanceof Number n) availStockTotal = n.longValue();
+        AggregationResults<Document> unitRes = mongoTemplate.aggregate(unitAgg, "pharmacy_stock_batches", Document.class);
+
+        Map<String, Double> stockByUnit = new HashMap<>();
+        for (Document d : unitRes.getMappedResults()) {
+            String unit = d.getString("_id");
+            if (unit == null || unit.isBlank()) {
+                unit = "UNKNOWN";
+            }
+            double qty = ((Number) d.getOrDefault("totalUnitQuantity", 0.0)).doubleValue();
+            stockByUnit.put(unit, qty);
         }
+
+        long availableBatchesCount = mongoTemplate.count(
+                Query.query(availableBatchCriteria),
+                PharmacyStockBatch.class
+        );
+
+        Aggregation distinctMedsAgg = newAggregation(
+                match(availableBatchCriteria),
+                group("medicineId")
+        );
+        AggregationResults<Document> distinctMedsRes = mongoTemplate.aggregate(distinctMedsAgg, "pharmacy_stock_batches", Document.class);
+        long distinctMedsInStock = distinctMedsRes.getMappedResults().size();
 
         return PharmacyAnalyticsDTO.builder()
                 .activeMedicineCatalogCount(activeMeds)
-                .availableMedicineStock(availStockTotal)
+                .availableMedicineStock(availableBatchesCount) // Deprecated scalar avoids summing tablets + ml
+                .availableBatchesCount(availableBatchesCount)
+                .distinctMedicinesInStock(distinctMedsInStock)
+                .stockByUnit(stockByUnit)
                 .lowStockItemsCount(lowStockCount)
                 .nearExpiryBatchesCount(nearExpiryCount)
                 .expiredBatchesCount(expiredCount)
                 .quarantinedBatchesCount(quarantinedCount)
                 .totalDispenses(totalDispenses)
                 .partiallyDispensedCount(partialDispenses)
-                .totalUnitsDispensed(0.0) // Units aggregated only per unit-safe queries
+                .totalUnitsDispensed(0.0)
                 .inventoryValuationStatus("COST_BASIS_NOT_AVAILABLE")
                 .generatedAt(Instant.now())
                 .build();
@@ -489,13 +535,14 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         verifyAdminOrBillingAccess();
         List<FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem> anomalies = new ArrayList<>();
 
+        // Section 7: Bounded & Indexed query (No findAll!)
         // Anomaly Check 1: Invoices marked PAID with outstandingAmount > 0
-        List<Invoice> invalidPaidInvoices = invoiceRepository.findAll().stream()
-                .filter(inv -> inv.getStatus() == InvoiceStatus.PAID &&
-                        inv.getOutstandingAmount() != null &&
-                        inv.getOutstandingAmount().compareTo(BigDecimal.ZERO) > 0)
-                .collect(Collectors.toList());
+        Criteria invalidPaidCriteria = Criteria.where("status").is(InvoiceStatus.PAID)
+                .and("outstandingAmount").gt(new org.bson.types.Decimal128(BigDecimal.ZERO));
+        long countInvalidPaid = mongoTemplate.count(Query.query(invalidPaidCriteria), Invoice.class);
 
+        List<Invoice> invalidPaidInvoices = mongoTemplate.find(
+                Query.query(invalidPaidCriteria).limit(100), Invoice.class);
         for (Invoice inv : invalidPaidInvoices) {
             anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
                     .anomalyType("PAID_STATUS_WITH_OUTSTANDING_BALANCE")
@@ -510,63 +557,90 @@ public class AnalyticsServiceImpl implements AnalyticsService {
                     .build());
         }
 
-        // Anomaly Check 2: Payments marked CONFIRMED missing corresponding Ledger Entry
-        List<BillingPayment> confirmedPayments = paymentRepository.findAll().stream()
-                .filter(p -> p.getStatus() == PaymentStatus.CONFIRMED)
-                .collect(Collectors.toList());
+        // Anomaly Check 2: Confirmed Payments missing Ledger Entry (via Aggregation Lookup)
+        Aggregation missingLedgerCountAgg = newAggregation(
+                match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
+                lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
+                match(Criteria.where("ledgerEntries").size(0)),
+                count().as("total")
+        );
+        AggregationResults<Document> missingLedgerCountRes = mongoTemplate.aggregate(missingLedgerCountAgg, "billing_payments", Document.class);
+        long countMissingLedgers = missingLedgerCountRes.getMappedResults().isEmpty() ? 0L :
+                ((Number) missingLedgerCountRes.getMappedResults().get(0).getOrDefault("total", 0L)).longValue();
 
-        for (BillingPayment pay : confirmedPayments) {
-            long ledgerCount = mongoTemplate.count(
-                    Query.query(Criteria.where("paymentId").is(pay.getId())),
-                    BillingLedgerEntry.class
-            );
-            if (ledgerCount == 0) {
-                anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
-                        .anomalyType("CONFIRMED_PAYMENT_MISSING_LEDGER_ENTRY")
-                        .severity("HIGH")
-                        .referenceEntity("PAYMENT")
-                        .entityId(pay.getId())
-                        .referenceNumber(pay.getPaymentNumber())
-                        .description("Payment is CONFIRMED but no corresponding double-entry ledger entry was found.")
-                        .expectedAmount(pay.getAmount())
-                        .actualAmount(BigDecimal.ZERO)
-                        .detectedAt(Instant.now())
-                        .build());
+        Aggregation missingLedgerAgg = newAggregation(
+                match(Criteria.where("status").is(PaymentStatus.CONFIRMED)),
+                lookup("billing_ledger_entries", "_id", "paymentId", "ledgerEntries"),
+                match(Criteria.where("ledgerEntries").size(0)),
+                limit(100)
+        );
+        AggregationResults<Document> missingLedgerRes = mongoTemplate.aggregate(missingLedgerAgg, "billing_payments", Document.class);
+        for (Document doc : missingLedgerRes.getMappedResults()) {
+            String payId = doc.get("_id") != null ? doc.get("_id").toString() : null;
+            String payNum = doc.getString("paymentNumber");
+            Object amtObj = doc.get("amount");
+            BigDecimal amt = BigDecimal.ZERO;
+            if (amtObj instanceof org.bson.types.Decimal128 d128) {
+                amt = d128.bigDecimalValue();
+            } else if (amtObj instanceof Number num) {
+                amt = BigDecimal.valueOf(num.doubleValue()).setScale(2, RoundingMode.HALF_UP);
             }
+
+            anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
+                    .anomalyType("CONFIRMED_PAYMENT_MISSING_LEDGER_ENTRY")
+                    .severity("HIGH")
+                    .referenceEntity("PAYMENT")
+                    .entityId(payId)
+                    .referenceNumber(payNum)
+                    .description("Payment is CONFIRMED but no corresponding double-entry ledger entry was found.")
+                    .expectedAmount(amt)
+                    .actualAmount(BigDecimal.ZERO)
+                    .detectedAt(Instant.now())
+                    .build());
         }
 
-        // Anomaly Check 3: Over-refunded payments
-        List<BillingPayment> allPayments = paymentRepository.findAll();
-        for (BillingPayment p : allPayments) {
-            if (p.getRefundedAmount() != null && p.getAmount() != null &&
-                    p.getRefundedAmount().compareTo(p.getAmount()) > 0) {
-                anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
-                        .anomalyType("PAYMENT_OVER_REFUNDED")
-                        .severity("HIGH")
-                        .referenceEntity("PAYMENT")
-                        .entityId(p.getId())
-                        .referenceNumber(p.getPaymentNumber())
-                        .description("Total refunded amount exceeds original payment amount.")
-                        .expectedAmount(p.getAmount())
-                        .actualAmount(p.getRefundedAmount())
-                        .detectedAt(Instant.now())
-                        .build());
-            }
+        // Anomaly Check 3: Over-refunded payments (via MongoDB comparison query, limit 100)
+        Criteria overRefundCriteria = Criteria.where("$expr").is(new Document("$gt", List.of("$refundedAmount", "$amount")));
+        long countOverRefunded = mongoTemplate.count(Query.query(overRefundCriteria), BillingPayment.class);
+
+        List<BillingPayment> overRefunded = mongoTemplate.find(Query.query(overRefundCriteria).limit(100), BillingPayment.class);
+        for (BillingPayment p : overRefunded) {
+            anomalies.add(FinancialReconciliationDashboardDTO.ReconciliationAnomalyItem.builder()
+                    .anomalyType("PAYMENT_OVER_REFUNDED")
+                    .severity("HIGH")
+                    .referenceEntity("PAYMENT")
+                    .entityId(p.getId())
+                    .referenceNumber(p.getPaymentNumber())
+                    .description("Total refunded amount exceeds original payment amount.")
+                    .expectedAmount(p.getAmount())
+                    .actualAmount(p.getRefundedAmount())
+                    .detectedAt(Instant.now())
+                    .build());
         }
 
         long totalInvoices = invoiceRepository.count();
         long totalPayments = paymentRepository.count();
         long totalRefunds = refundRepository.count();
+        long totalExamined = totalInvoices + totalPayments + totalRefunds;
+        long totalDiscrepancies = countInvalidPaid + countMissingLedgers + countOverRefunded;
+        long returnedCount = anomalies.size();
+        boolean isTruncated = totalDiscrepancies > returnedCount;
 
         auditService.audit(null, "ANALYTICS", "FINANCIAL_RECONCILIATION",
                 ClinicalAuditAction.REPORT_VIEWED, "SUCCESS", null,
-                "Financial reconciliation audit executed. Anomalies found: " + anomalies.size());
+                "Financial reconciliation audit executed. Total discrepancies detected: " + totalDiscrepancies + ", returned: " + returnedCount);
 
         return FinancialReconciliationDashboardDTO.builder()
-                .totalInconsistenciesDetected(anomalies.size())
+                .totalInconsistenciesDetected(totalDiscrepancies)
                 .totalInvoicesAudited(totalInvoices)
                 .totalPaymentsAudited(totalPayments)
                 .totalRefundsAudited(totalRefunds)
+                .examinedRecordsCount(totalExamined)
+                .returnedAnomaliesCount(returnedCount)
+                .truncated(isTruncated)
+                .hasMore(isTruncated)
+                .page(0)
+                .pageSize(100)
                 .anomalies(anomalies)
                 .auditedAt(Instant.now())
                 .build();
@@ -668,8 +742,92 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         return requestedDoctorId;
     }
 
-    private long countNewPatients(AnalyticsDateUtils.DateBoundaries b) {
-        return patientRepository.count(); // Fallback if createdAt absent on legacy patients
+    private record PatientCountResult(Long newCount, String status) {}
+
+    private PatientCountResult countNewPatients(AnalyticsDateUtils.DateBoundaries b) {
+        long totalPatients = patientRepository.count();
+        if (totalPatients == 0) {
+            return new PatientCountResult(0L, "COMPLETE");
+        }
+
+        long timestampedCount = mongoTemplate.count(
+                Query.query(Criteria.where("createdAt").exists(true)),
+                Patient.class
+        );
+        if (timestampedCount == 0) {
+            return new PatientCountResult(null, "UNAVAILABLE");
+        }
+
+        long count = mongoTemplate.count(
+                Query.query(Criteria.where("createdAt").gte(b.startInclusive()).lt(b.endExclusive())),
+                Patient.class
+        );
+        if (timestampedCount < totalPatients) {
+            return new PatientCountResult(count, "PARTIAL_HISTORICAL_DATA");
+        } else {
+            return new PatientCountResult(count, "COMPLETE");
+        }
+    }
+
+    private long countPatientsWithConsultations(AnalyticsDateUtils.DateBoundaries b) {
+        // Section 2: Real completed appointments OR finalized clinical encounters in period
+        Aggregation apptAgg = newAggregation(
+                match(Criteria.where("appointmentDate").gte(b.startDate().toString()).lte(b.endDate().toString())
+                        .and("status").is("COMPLETED")),
+                group("patientId")
+        );
+        AggregationResults<Document> apptRes = mongoTemplate.aggregate(apptAgg, "appointments", Document.class);
+        Set<String> rawPatientIds = new HashSet<>();
+        if (apptRes != null && apptRes.getMappedResults() != null) {
+            for (Document doc : apptRes.getMappedResults()) {
+                String pid = doc.getString("_id");
+                if (pid != null && !pid.isBlank()) {
+                    rawPatientIds.add(pid);
+                }
+            }
+        }
+
+        Criteria encounterCriteria = Criteria.where("status").in(List.of(EncounterStatus.SIGNED.name(), EncounterStatus.AMENDED.name()))
+                .and("visitStartedAt").gte(b.startInclusive()).lt(b.endExclusive());
+        Aggregation encounterAgg = newAggregation(
+                match(encounterCriteria),
+                group("patientId")
+        );
+        AggregationResults<Document> encounterRes = mongoTemplate.aggregate(encounterAgg, "clinical_encounters", Document.class);
+        if (encounterRes != null && encounterRes.getMappedResults() != null) {
+            for (Document doc : encounterRes.getMappedResults()) {
+                String pid = doc.getString("_id");
+                if (pid != null && !pid.isBlank()) {
+                    rawPatientIds.add(pid);
+                }
+            }
+        }
+
+        if (rawPatientIds.isEmpty()) {
+            return 0L;
+        }
+
+        // Canonical ID resolution for Patient.id vs Patient.userId
+        Query resolveQuery = Query.query(new Criteria().orOperator(
+                Criteria.where("_id").in(rawPatientIds),
+                Criteria.where("userId").in(rawPatientIds)
+        ));
+        List<Patient> matchedPatients = mongoTemplate.find(resolveQuery, Patient.class);
+        Set<String> canonicalPatientIds = new HashSet<>();
+        Set<String> resolvedRawIds = new HashSet<>();
+        for (Patient p : matchedPatients) {
+            canonicalPatientIds.add(p.getId());
+            if (p.getId() != null) resolvedRawIds.add(p.getId());
+            if (p.getUserId() != null) resolvedRawIds.add(p.getUserId());
+        }
+
+        for (String rawId : rawPatientIds) {
+            if (!resolvedRawIds.contains(rawId)) {
+                canonicalPatientIds.add(rawId);
+            }
+        }
+
+        return canonicalPatientIds.size();
     }
 
     private long countAppointmentsForDate(String dateStr) {
@@ -679,17 +837,45 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     private record AppointmentPeriodCounts(long total, long booked, long completed, long cancelled, long pending, double completionRate) {}
 
     private AppointmentPeriodCounts aggregateAppointmentsInPeriod(AnalyticsDateUtils.DateBoundaries b, String doctorId) {
+        // Section 3: Database-side aggregation for appointments
         Criteria criteria = Criteria.where("appointmentDate").gte(b.startDate().toString()).lte(b.endDate().toString());
         if (doctorId != null && !doctorId.isBlank()) {
-            criteria.and("doctorId").is(doctorId);
+            Doctor doc = doctorRepository.findById(doctorId).orElse(null);
+            if (doc != null && doc.getUserId() != null) {
+                criteria.orOperator(
+                        Criteria.where("doctorId").is(doctorId),
+                        Criteria.where("doctorId").is(doc.getUserId())
+                );
+            } else {
+                criteria.and("doctorId").is(doctorId);
+            }
         }
 
-        List<Appointment> appts = mongoTemplate.find(Query.query(criteria), Appointment.class);
-        long total = appts.size();
-        long completed = appts.stream().filter(a -> "COMPLETED".equalsIgnoreCase(a.getStatus())).count();
-        long cancelled = appts.stream().filter(a -> "CANCELLED".equalsIgnoreCase(a.getStatus()) || "REJECTED".equalsIgnoreCase(a.getStatus())).count();
-        long booked = appts.stream().filter(a -> "APPROVED".equalsIgnoreCase(a.getStatus())).count();
-        long pending = appts.stream().filter(a -> "PENDING".equalsIgnoreCase(a.getStatus())).count();
+        Aggregation agg = newAggregation(
+                match(criteria),
+                group()
+                        .count().as("total")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("COMPLETED")).then(1).otherwise(0)).as("completed")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("APPROVED")).then(1).otherwise(0)).as("booked")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").in(List.of("CANCELLED", "REJECTED"))).then(1).otherwise(0)).as("cancelled")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("PENDING")).then(1).otherwise(0)).as("pending")
+        );
+
+        AggregationResults<Document> res = mongoTemplate.aggregate(agg, "appointments", Document.class);
+        if (res == null || res.getMappedResults() == null || res.getMappedResults().isEmpty()) {
+            return new AppointmentPeriodCounts(0, 0, 0, 0, 0, 0.0);
+        }
+
+        Document d = res.getMappedResults().get(0);
+        long total = ((Number) d.getOrDefault("total", 0)).longValue();
+        long completed = ((Number) d.getOrDefault("completed", 0)).longValue();
+        long booked = ((Number) d.getOrDefault("booked", 0)).longValue();
+        long cancelled = ((Number) d.getOrDefault("cancelled", 0)).longValue();
+        long pending = ((Number) d.getOrDefault("pending", 0)).longValue();
         double rate = total > 0 ? ((double) completed / total) * 100.0 : 0.0;
 
         return new AppointmentPeriodCounts(total, booked, completed, cancelled, pending, roundDouble(rate));
@@ -698,7 +884,15 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     private List<AppointmentAnalyticsDTO.DailyMetricPoint> aggregateDailyAppointmentTrends(AnalyticsDateUtils.DateBoundaries b, String doctorId) {
         Criteria criteria = Criteria.where("appointmentDate").gte(b.startDate().toString()).lte(b.endDate().toString());
         if (doctorId != null && !doctorId.isBlank()) {
-            criteria.and("doctorId").is(doctorId);
+            Doctor doc = doctorRepository.findById(doctorId).orElse(null);
+            if (doc != null && doc.getUserId() != null) {
+                criteria.orOperator(
+                        Criteria.where("doctorId").is(doctorId),
+                        Criteria.where("doctorId").is(doc.getUserId())
+                );
+            } else {
+                criteria.and("doctorId").is(doctorId);
+            }
         }
 
         Aggregation agg = newAggregation(
@@ -731,7 +925,15 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     private Map<String, Long> aggregateAppointmentStatusDistribution(AnalyticsDateUtils.DateBoundaries b, String doctorId) {
         Criteria criteria = Criteria.where("appointmentDate").gte(b.startDate().toString()).lte(b.endDate().toString());
         if (doctorId != null && !doctorId.isBlank()) {
-            criteria.and("doctorId").is(doctorId);
+            Doctor doc = doctorRepository.findById(doctorId).orElse(null);
+            if (doc != null && doc.getUserId() != null) {
+                criteria.orOperator(
+                        Criteria.where("doctorId").is(doctorId),
+                        Criteria.where("doctorId").is(doc.getUserId())
+                );
+            } else {
+                criteria.and("doctorId").is(doctorId);
+            }
         }
 
         Aggregation agg = newAggregation(
@@ -765,6 +967,9 @@ public class AnalyticsServiceImpl implements AnalyticsService {
             String docId = d.getString("_id");
             if (docId != null) {
                 Doctor doc = doctorRepository.findById(docId).orElse(null);
+                if (doc == null) {
+                    doc = doctorRepository.findByUserId(docId).orElse(null);
+                }
                 long total = ((Number) d.getOrDefault("totalAppointments", 0)).longValue();
                 long completed = ((Number) d.getOrDefault("completedAppointments", 0)).longValue();
                 double rate = total > 0 ? ((double) completed / total) * 100.0 : 0.0;
@@ -780,6 +985,36 @@ public class AnalyticsServiceImpl implements AnalyticsService {
             }
         }
         return list;
+    }
+
+    private record BedStats(long total, long occupied, long available, long maintenance, double occupancyRate) {}
+
+    private BedStats aggregateBedStatistics() {
+        // Section 4: Database-side aggregation for beds
+        Aggregation agg = newAggregation(
+                group()
+                        .count().as("total")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("OCCUPIED")).then(1).otherwise(0)).as("occupied")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("AVAILABLE")).then(1).otherwise(0)).as("available")
+                        .sum(org.springframework.data.mongodb.core.aggregation.ConditionalOperators
+                                .when(Criteria.where("status").is("MAINTENANCE")).then(1).otherwise(0)).as("maintenance")
+        );
+
+        AggregationResults<Document> res = mongoTemplate.aggregate(agg, "beds", Document.class);
+        if (res == null || res.getMappedResults() == null || res.getMappedResults().isEmpty()) {
+            return new BedStats(0, 0, 0, 0, 0.0);
+        }
+
+        Document d = res.getMappedResults().get(0);
+        long total = ((Number) d.getOrDefault("total", 0)).longValue();
+        long occupied = ((Number) d.getOrDefault("occupied", 0)).longValue();
+        long available = ((Number) d.getOrDefault("available", 0)).longValue();
+        long maintenance = ((Number) d.getOrDefault("maintenance", 0)).longValue();
+        double occRate = total > 0 ? ((double) occupied / total) * 100.0 : 0.0;
+
+        return new BedStats(total, occupied, available, maintenance, roundDouble(occRate));
     }
 
     private long countLabOrders(AnalyticsDateUtils.DateBoundaries b) {
@@ -798,9 +1033,9 @@ public class AnalyticsServiceImpl implements AnalyticsService {
 
     private long countSpecimensCollected(AnalyticsDateUtils.DateBoundaries b) {
         return mongoTemplate.count(
-                Query.query(Criteria.where("status").in(List.of(LabOrderStatus.IN_PROGRESS, LabOrderStatus.COMPLETED))
-                        .and("updatedAt").gte(b.startInclusive()).lt(b.endExclusive())),
-                LabOrder.class
+                Query.query(Criteria.where("collectionStatus").in(List.of(SpecimenStatus.COLLECTED, SpecimenStatus.RECEIVED, SpecimenStatus.COMPLETED))
+                        .and("collectedAt").gte(b.startInclusive()).lt(b.endExclusive())),
+                LabSpecimen.class
         );
     }
 
@@ -812,14 +1047,23 @@ public class AnalyticsServiceImpl implements AnalyticsService {
         );
     }
 
+    private long countActiveMedicines() {
+        // Section 6: Real active flag count
+        return mongoTemplate.count(Query.query(Criteria.where("active").is(true)), PharmacyMedicine.class);
+    }
+
     private long countLowStockMedicines() {
-        List<PharmacyMedicine> meds = medicineRepository.findAll();
+        // Find medicines whose available non-expired batch quantities <= reorderLevel
+        List<PharmacyMedicine> meds = mongoTemplate.find(Query.query(Criteria.where("active").is(true)), PharmacyMedicine.class);
         long low = 0;
+        Instant now = Instant.now();
+
         for (PharmacyMedicine m : meds) {
             double threshold = m.getReorderLevel() != null ? m.getReorderLevel() : 10.0;
-            // Sum batch available quantity
             Aggregation agg = newAggregation(
-                    match(Criteria.where("medicineId").is(m.getId()).and("status").is(BatchStatus.AVAILABLE)),
+                    match(Criteria.where("medicineId").is(m.getId())
+                            .and("status").is(BatchStatus.AVAILABLE)
+                            .and("expiryDate").gt(now)),
                     group().sum("quantityAvailable").as("total")
             );
             AggregationResults<Document> res = mongoTemplate.aggregate(agg, "pharmacy_stock_batches", Document.class);
@@ -844,8 +1088,12 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     }
 
     private long countExpiredBatches() {
+        Instant now = Instant.now();
         return mongoTemplate.count(
-                Query.query(Criteria.where("status").is(BatchStatus.EXPIRED)),
+                Query.query(new Criteria().orOperator(
+                        Criteria.where("status").is(BatchStatus.EXPIRED),
+                        Criteria.where("expiryDate").lte(now)
+                )),
                 PharmacyStockBatch.class
         );
     }
@@ -959,7 +1207,6 @@ public class AnalyticsServiceImpl implements AnalyticsService {
     }
 
     private List<BillingFinancialAnalyticsDTO.DailyRevenuePoint> aggregateDailyRevenueTrends(AnalyticsDateUtils.DateBoundaries b) {
-        // Collect daily billed and collected amounts
         Map<String, BigDecimal> billedMap = new HashMap<>();
         Map<String, BigDecimal> collectedMap = new HashMap<>();
 

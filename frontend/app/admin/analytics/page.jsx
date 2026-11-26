@@ -294,7 +294,8 @@ export default function AnalyticsDashboardPage() {
                 <FaExclamationTriangle /> Financial Reconciliation Discrepancies ({reconciliation.totalInconsistenciesDetected})
               </div>
               <div style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 12 }}>
-                The automated audit engine detected ledger or balance discrepancies requiring manual accounting review:
+                The automated audit engine detected ledger or balance discrepancies requiring manual accounting review
+                {reconciliation.truncated ? ` (Displaying ${reconciliation.returnedAnomaliesCount || reconciliation.anomalies?.length} of ${reconciliation.totalInconsistenciesDetected} total discrepancies across ${reconciliation.examinedRecordsCount || 'all'} audited records)` : ` across ${reconciliation.examinedRecordsCount || 'all'} audited records`}:
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
