@@ -5,7 +5,10 @@
 | **Patients** | `patients` | `_id`, `userId`, `createdAt`, `updatedAt`, `gender`, `bloodGroup` | Total patients, new registrations (timestamp-bounded, with status `COMPLETE`, `PARTIAL_HISTORICAL_DATA`, or `UNAVAILABLE`), demographics |
 | **Doctors** | `doctors` | `_id`, `userId`, `status`, `specialization` | Active doctor counts, doctor-scoped workload summaries (supporting both `id` and `userId` cross-references) |
 | **Appointments** | `appointments` | `appointmentDate`, `doctorId`, `status`, `patientId` | Status distribution via `$group`, completion/cancellation rates, daily trends, active patient consultations |
-| **Beds** | `beds` | `status`, `type`, `ward` | Bed occupancy rate, total, occupied, available, and maintenance counts via `$group` |
+| **Beds (Snapshot)** | `beds` | `status`, `type`, `ward` | Bed occupancy rate, total, occupied, available, and maintenance counts via `$group` |
+| **Beds (Historical)** | `bed_occupancy_events` | `bedId`, `wardId`, `eventType`, `occurredAt`, `sequenceNumber` | Chronological event replay to reconstruct `[occupiedAt, vacatedAt)` intervals for exact bed-hours |
+| **Inpatient Admissions** | `bed_bookings` | `patientId`, `doctorId`, `admittedAt`, `dischargedAt`, `status` | Inpatient admission volume, discharges, transfers, and average length of stay (ALOS) |
+| **Bed Transfers** | `bed_transfers` | `sourceBedId`, `destinationBedId`, `transferredAt`, `reasonCode` | Transfer volumes, escalation/stepdown reasons, and inter-ward patient movements |
 | **Clinical Encounters** | `clinical_encounters` | `doctorId`, `status`, `visitStartedAt`, `patientId` | Encounters started/signed, combined with appointments to compute deduplicated active patients with consultations |
 | **Laboratory** | `lab_orders`, `lab_results`, `lab_specimens` | `status`, `workflowStatus`, `releasedAt`, `measuredAt`, `collectionStatus`, `rejectedAt` | Turnaround time (TAT), order volumes, interpretations, specimen rejection rates |
 | **Pharmacy** | `pharmacy_medicines`, `pharmacy_stock_batches`, `pharmacy_dispenses` | `active`, `reorderLevel`, `stockUnit`, `quantityAvailable`, `expiryDate`, `status` | Active catalog count, unit-safe batch stock (`stockByUnit: Map<String, Double>`), available batch count, distinct stocked medicines, low-stock count, near-expiry count |

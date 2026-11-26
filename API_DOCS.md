@@ -57,12 +57,31 @@ This document describes the REST API endpoints provided by the Hospital Manageme
 
 ---
 
-## 🏥 5. Hospital Facilities & Operations
+## 🏥 5. Hospital Facilities & Inpatient Bed Operations
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `GET` | `/api/beds` | Admin / Staff | Returns real-time hospital bed occupancy matrix |
-| `POST` | `/api/beds/book` | Admin / Staff | Allocates a bed to an admitted patient |
+| `GET` | `/api/wards` | Admin / Doctor / Bed Manager | Lists all registered hospital wards and departments |
+| `POST` | `/api/wards` | Admin | Creates a new hospital ward with unique ward code |
+| `PUT` | `/api/wards/{id}` | Admin | Updates ward operational information |
+| `GET` | `/api/beds` | Admin / Doctor / Bed Manager | Returns hospital bed matrix |
+| `GET` | `/api/beds/availability` | Public / Authenticated | Returns real-time available bed inventory with zero PHI |
+| `POST` | `/api/beds` | Admin | Registers a new hospital bed |
+| `PUT` | `/api/beds/{id}` | Admin / Bed Manager | Updates bed type, daily rate, or status |
+| `POST` | `/api/beds/{id}/mark-cleaning` | Admin / Bed Manager | Places bed into cleaning / turnover status |
+| `POST` | `/api/beds/{id}/mark-ready` | Admin / Bed Manager | Marks cleaned bed as AVAILABLE |
+| `GET` | `/api/beds/{id}/occupancy-history` | Admin / Bed Manager / Doctor | Retrieves chronological occupancy event log for bed |
+| `POST` | `/api/admissions` | Admin / Doctor / Bed Manager | Executes atomic patient admission and bed claim |
+| `GET` | `/api/admissions` | Admin / Doctor / Bed Manager | Lists active inpatient admissions |
+| `GET` | `/api/admissions/{id}` | Admin / Doctor / Bed Manager / Patient | Retrieves detailed admission record |
+| `GET` | `/api/admissions/my-history` | Patient | Retrieves logged-in patient's admission history |
+| `POST` | `/api/admissions/{id}/transfers` | Admin / Doctor / Bed Manager | Executes atomic bed-to-bed or ward transfer |
+| `POST` | `/api/admissions/{id}/discharge-ready` | Admin / Doctor | Signs clinical clearance for discharge |
+| `POST` | `/api/admissions/{id}/discharge` | Admin / Doctor / Bed Manager | Finalizes discharge, frees bed to turnover, records billing |
+| `GET` | `/api/analytics/beds/history` | Admin / Bed Manager | Interval-based historical bed-hours and occupancy rate |
+| `GET` | `/api/analytics/beds/occupancy` | Admin / Bed Manager | Daily occupancy metrics and admissions/discharges |
+| `GET` | `/api/analytics/beds/length-of-stay` | Admin / Bed Manager | Average length of stay (ALOS) metrics |
+| `POST` | `/api/beds/book` | Admin / Staff | Legacy backward-compatible bed booking endpoint |
 | `GET` | `/api/invoices` | Admin / Staff | Fetches patient billing and payment invoices |
 | `GET` | `/api/inventory` | Admin / Staff | Real-time pharmaceutical & medical supply levels |
 
