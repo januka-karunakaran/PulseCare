@@ -295,6 +295,10 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
                     }
                 } catch (BedAlreadyOccupiedException ex) {
                     conflictCount.incrementAndGet();
+                } catch (org.springframework.dao.DataAccessException ex) {
+                    // Under multi-document transactions, concurrent writes on the contested bed document
+                    // throw TransientDataAccessException / MongoCommandException (WriteConflict 112)
+                    conflictCount.incrementAndGet();
                 } catch (Throwable t) {
                     t.printStackTrace();
                 }
