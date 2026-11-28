@@ -17,9 +17,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.mongodb.MongoTransactionManager;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -62,6 +65,8 @@ class BillingServiceTest {
     private ClinicalAuditService auditService;
     @Mock
     private BillingPdfService billingPdfService;
+    @Mock
+    private MongoTransactionManager transactionManager;
 
     @InjectMocks
     private BillingServiceImpl billingService;
@@ -88,6 +93,11 @@ class BillingServiceTest {
         lenient().when(authz.canRecordPayments()).thenReturn(true);
         lenient().when(authz.canProcessRefunds()).thenReturn(true);
         lenient().when(authz.getCurrentUser()).thenReturn(billingUser);
+
+        TransactionStatus mockStatus = mock(TransactionStatus.class);
+        lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class))).thenReturn(mockStatus);
+        lenient().doNothing().when(transactionManager).commit(any(TransactionStatus.class));
+        lenient().doNothing().when(transactionManager).rollback(any(TransactionStatus.class));
     }
 
     @Test
@@ -335,6 +345,26 @@ class BillingServiceTest {
                 .build();
 
         assertThrows(PaymentConflictException.class, () -> billingService.recordPayment(req));
+    }
+
+    @Test
+    @DisplayName("Fail-Closed: Missing transaction manager fails closed and cannot process payment")
+    void testRecordPayment_MissingTransactionManager_FailsClosed() {
+        BillingServiceImpl failClosedService = new BillingServiceImpl(
+                catalogRepository, chargeRepository, invoiceRepository, paymentRepository,
+                ledgerEntryRepository, creditNoteRepository, refundRepository, patientRepository,
+                userRepository, outboxRepository, mongoTemplate, authz, auditService,
+                billingPdfService, null
+        );
+
+        RecordPaymentRequest req = RecordPaymentRequest.builder()
+                .invoiceId("inv-1")
+                .amount(new BigDecimal("100.00"))
+                .method(PaymentMethod.CASH)
+                .build();
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> failClosedService.recordPayment(req));
+        assertTrue(ex.getMessage().contains("FAIL-CLOSED"));
     }
 
     @Test

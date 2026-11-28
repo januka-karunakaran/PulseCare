@@ -60,12 +60,13 @@ public class BillingServiceImpl implements BillingService {
     private final AuthorizationService authz;
     private final ClinicalAuditService auditService;
     private final BillingPdfService billingPdfService;
+    private final MongoTransactionManager transactionManager;
 
-    @Autowired(required = false)
-    private MongoTransactionManager transactionManager;
-
-    public void setTransactionManager(MongoTransactionManager transactionManager) {
-        this.transactionManager = transactionManager;
+    @jakarta.annotation.PostConstruct
+    public void validateTransactionInfrastructure() {
+        if (transactionManager == null) {
+            throw new IllegalStateException("FAIL-CLOSED: Required MongoTransactionManager bean is absent. Cannot initialize BillingService.");
+        }
     }
 
     private static final String DEFAULT_CURRENCY = "LKR";
@@ -534,7 +535,7 @@ public class BillingServiceImpl implements BillingService {
 
     private <T> T executeInTransactionWithRetry(TransactionCallback<T> action) {
         if (transactionManager == null) {
-            return action.doInTransaction(new SimpleTransactionStatus());
+            throw new IllegalStateException("FAIL-CLOSED: MongoTransactionManager is required for financial writes but is not configured.");
         }
         TransactionTemplate txTemplate = new TransactionTemplate(transactionManager);
         txTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
@@ -807,6 +808,11 @@ public class BillingServiceImpl implements BillingService {
 
         if (initialCheck.getStatus() != PaymentStatus.PENDING) {
             throw new BadRequestException("Only PENDING payments can be confirmed. Current status: " + initialCheck.getStatus());
+        }
+
+        if (initialCheck.getMethod() != PaymentMethod.CASH &&
+                (initialCheck.getExternalReference() == null || initialCheck.getExternalReference().isBlank())) {
+            throw new BadRequestException("External payment cannot be confirmed without external transaction reference / settlement proof");
         }
 
         User currentUser = authz.getCurrentUser();
