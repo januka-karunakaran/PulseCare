@@ -569,12 +569,24 @@ public class BillingConcurrencyMongoIntegrationTest {
         // Attempting to record payment must fail downstream when saving ledger entry
         assertThrows(RuntimeException.class, () -> billingService.recordPayment(req));
 
-        // Verification of Durable Consistency:
-        // Invoice balance must NOT remain changed (must be rolled back to 100.00 outstanding, 0.00 paid, status ISSUED)
+        // Verification of Durable Consistency across ALL entities:
+        // 1. Invoice balance must NOT remain changed (must be rolled back to 100.00 outstanding, 0.00 paid, status ISSUED)
         Invoice reloaded = invoiceRepository.findById(invoiceId).orElseThrow();
         assertEquals(InvoiceStatus.ISSUED, reloaded.getStatus(), "Invoice status must remain ISSUED after rollback");
         assertEquals(new BigDecimal("100.00"), reloaded.getOutstandingAmount().setScale(2), "Outstanding balance must be fully restored to 100.00");
         assertEquals(new BigDecimal("0.00"), reloaded.getPaidAmount().setScale(2), "Paid amount must be restored to 0.00");
+
+        // 2. No orphan CONFIRMED payment must exist
+        List<BillingPayment> payments = paymentRepository.findByInvoiceId(invoiceId);
+        assertTrue(payments.stream().noneMatch(p -> p.getStatus() == PaymentStatus.CONFIRMED),
+                "No orphan CONFIRMED payment must exist for invoice " + invoiceId);
+        // Any persisted payment must be marked FAILED with failure cause
+        assertTrue(payments.stream().allMatch(p -> p.getStatus() == PaymentStatus.FAILED),
+                "All persisted payment attempts must be marked FAILED");
+
+        // 3. No incomplete ledger representation exists
+        List<BillingLedgerEntry> invoiceLedgers = ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoiceId);
+        assertTrue(invoiceLedgers.isEmpty(), "No incomplete ledger entries should exist for failed payment on invoice " + invoiceId);
 
         // Cleanup index for subsequent tests
         mongoTemplate.indexOps(BillingLedgerEntry.class).dropAllIndexes();
