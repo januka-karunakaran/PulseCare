@@ -12,17 +12,26 @@ import com.hospital.backend.service.ClinicalAuditService;
 import com.mongodb.client.result.UpdateResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.ConcurrencyFailureException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.mongodb.MongoTransactionException;
+import org.springframework.data.mongodb.MongoTransactionManager;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -51,6 +60,13 @@ public class BillingServiceImpl implements BillingService {
     private final AuthorizationService authz;
     private final ClinicalAuditService auditService;
     private final BillingPdfService billingPdfService;
+
+    @Autowired(required = false)
+    private MongoTransactionManager transactionManager;
+
+    public void setTransactionManager(MongoTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
 
     private static final String DEFAULT_CURRENCY = "LKR";
     private static final RoundingMode ROUNDING = RoundingMode.HALF_UP;
@@ -502,31 +518,85 @@ public class BillingServiceImpl implements BillingService {
     // 4. Payments, Concurrency & Ledger
     // =========================================================================
 
+    private boolean isTransientTransactionError(Throwable ex) {
+        if (ex == null) return false;
+        if (ex instanceof org.springframework.dao.TransientDataAccessException) return true;
+        if (ex instanceof org.springframework.data.mongodb.MongoTransactionException) return true;
+        if (ex instanceof com.mongodb.MongoException) {
+            com.mongodb.MongoException me = (com.mongodb.MongoException) ex;
+            if (me.hasErrorLabel(com.mongodb.MongoException.TRANSIENT_TRANSACTION_ERROR_LABEL)
+                    || me.getCode() == 112) { // 112 = WriteConflict
+                return true;
+            }
+        }
+        return isTransientTransactionError(ex.getCause());
+    }
+
+    private <T> T executeInTransactionWithRetry(TransactionCallback<T> action) {
+        if (transactionManager == null) {
+            return action.doInTransaction(new SimpleTransactionStatus());
+        }
+        TransactionTemplate txTemplate = new TransactionTemplate(transactionManager);
+        txTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        int maxRetries = 25;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return txTemplate.execute(action);
+            } catch (Throwable ex) {
+                if (isTransientTransactionError(ex)) {
+                    log.warn("Transient write conflict on payment transaction (attempt {}/{}): {}",
+                            attempt, maxRetries, ex.getMessage());
+                    if (attempt == maxRetries) {
+                        throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
+                                "Concurrent payment conflict after " + maxRetries + " attempts. Please retry.");
+                    }
+                    try {
+                        Thread.sleep(ThreadLocalRandom.current().nextLong(10, 45));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Transaction retry interrupted", ie);
+                    }
+                } else {
+                    if (ex instanceof RuntimeException) {
+                        throw (RuntimeException) ex;
+                    }
+                    throw new RuntimeException("Payment transaction failed", ex);
+                }
+            }
+        }
+        throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT", "Transaction could not be completed.");
+    }
+
     @Override
-    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public BillingPayment recordPayment(RecordPaymentRequest request) {
         if (!authz.canRecordPayments()) {
             throw new AccessDeniedException("Only Billing Staff and Administrators can record payments");
         }
 
-        // 1. Idempotency Check
+        // 1. Idempotency Check & Conflict Detection
+        BillingPayment existingPaymentToReuse = null;
         if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
-            Optional<BillingPayment> existing = paymentRepository.findByIdempotencyKey(request.getIdempotencyKey().trim());
+            String key = request.getIdempotencyKey().trim();
+            Optional<BillingPayment> existing = paymentRepository.findByIdempotencyKey(key);
             if (existing.isPresent()) {
                 BillingPayment p = existing.get();
-                if (p.getAmount().compareTo(request.getAmount().setScale(2, ROUNDING)) == 0 &&
-                    p.getInvoiceId().equals(request.getInvoiceId())) {
-                    if (p.getStatus() == PaymentStatus.CONFIRMED) {
-                        return p;
-                    }
-                    if (p.getStatus() == PaymentStatus.FAILED || p.getStatus() == PaymentStatus.CANCELLED) {
-                        log.info("Previous payment with idempotencyKey {} failed/cancelled. Allowing clean retry.", request.getIdempotencyKey());
-                    } else {
-                        return p;
-                    }
-                } else {
+                boolean sameInvoice = Objects.equals(p.getInvoiceId(), request.getInvoiceId());
+                boolean sameAmount = p.getAmount() != null &&
+                        p.getAmount().setScale(2, ROUNDING).compareTo(request.getAmount().setScale(2, ROUNDING)) == 0;
+                boolean sameMethod = p.getMethod() == request.getMethod();
+
+                if (!sameInvoice || !sameAmount || !sameMethod) {
                     throw new PaymentConflictException("IDEMPOTENCY_CONFLICT",
-                            "Idempotency key '" + request.getIdempotencyKey() + "' already used with different parameters");
+                            "Idempotency key '" + key + "' already used with different parameters");
+                }
+
+                if (p.getStatus() == PaymentStatus.CONFIRMED || p.getStatus() == PaymentStatus.PENDING) {
+                    return p;
+                }
+                if (p.getStatus() == PaymentStatus.FAILED || p.getStatus() == PaymentStatus.CANCELLED) {
+                    log.info("Previous payment with idempotencyKey {} is {}. Reusing existing document for retry.",
+                            key, p.getStatus());
+                    existingPaymentToReuse = p;
                 }
             }
         }
@@ -534,12 +604,21 @@ public class BillingServiceImpl implements BillingService {
         // 2. Duplicate External Reference Check (for non-cash payments)
         if (request.getMethod() != PaymentMethod.CASH && request.getExternalReference() != null && !request.getExternalReference().isBlank()) {
             Optional<BillingPayment> dupRef = paymentRepository.findByExternalReference(request.getExternalReference().trim());
-            if (dupRef.isPresent()) {
+            if (dupRef.isPresent() && (existingPaymentToReuse == null || !dupRef.get().getId().equals(existingPaymentToReuse.getId()))) {
                 throw new PaymentConflictException("DUPLICATE_EXTERNAL_REF",
                         "External payment reference already exists: " + request.getExternalReference());
             }
         }
 
+        final BillingPayment paymentRecordToUse = existingPaymentToReuse;
+
+        // 3. Execute inside MongoDB multi-document ACID transaction with safe bounded retries
+        return executeInTransactionWithRetry(status -> {
+            return executeRecordPaymentTransaction(request, paymentRecordToUse);
+        });
+    }
+
+    private BillingPayment executeRecordPaymentTransaction(RecordPaymentRequest request, BillingPayment paymentRecordToUse) {
         Invoice invoice = invoiceRepository.findById(request.getInvoiceId())
                 .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + request.getInvoiceId()));
 
@@ -563,61 +642,73 @@ public class BillingServiceImpl implements BillingService {
                     "Payment of " + payAmount + " exceeds outstanding balance of " + invoice.getOutstandingAmount());
         }
 
-        // 3. ATOMIC CONDITIONAL UPDATE VIA MONGO TEMPLATE (Concurrency Priority P0)
-        org.bson.types.Decimal128 decPayAmount = new org.bson.types.Decimal128(payAmount);
-        org.bson.types.Decimal128 decNegPayAmount = new org.bson.types.Decimal128(payAmount.negate());
+        boolean isCash = request.getMethod() == PaymentMethod.CASH;
+        User currentUser = authz.getCurrentUser();
+        String currentUserId = currentUser != null ? currentUser.getId() : "SYSTEM";
 
-        Query query = Query.query(
-                Criteria.where("_id").is(invoice.getId())
-                        .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.PARTIALLY_PAID.name(), InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID))
-                        .and("outstandingAmount").gte(decPayAmount)
-        );
-        Update update = new Update()
-                .inc("paidAmount", decPayAmount)
-                .inc("outstandingAmount", decNegPayAmount)
-                .set("paymentMethod", request.getMethod())
-                .set("updatedAt", Instant.now());
-
-        UpdateResult result = mongoTemplate.updateFirst(query, update, Invoice.class);
-        if (result.getModifiedCount() == 0) {
-            log.warn("Concurrent payment conflict detected on invoice {}. Outstanding balance insufficient.", invoice.getInvoiceNumber());
-            throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
-                    "Concurrent balance update conflict on invoice " + invoice.getInvoiceNumber() + ". Please retry.");
+        // Prepare or reuse payment document
+        BillingPayment payment;
+        if (paymentRecordToUse != null) {
+            payment = paymentRecordToUse;
+            payment.setAmount(payAmount);
+            payment.setMethod(request.getMethod());
+            payment.setExternalReference(request.getExternalReference());
+            payment.setNotes(request.getNotes());
+            payment.setUpdatedAt(Instant.now());
+        } else {
+            String paymentNumber = "PAY-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999);
+            payment = BillingPayment.builder()
+                    .paymentNumber(paymentNumber)
+                    .invoiceId(invoice.getId())
+                    .patientId(invoice.getPatientId())
+                    .amount(payAmount)
+                    .currency(invoice.getCurrency())
+                    .method(request.getMethod())
+                    .externalReference(request.getExternalReference())
+                    .idempotencyKey(request.getIdempotencyKey() != null ? request.getIdempotencyKey().trim() : null)
+                    .receivedAt(Instant.now())
+                    .notes(request.getNotes())
+                    .createdAt(Instant.now())
+                    .updatedAt(Instant.now())
+                    .build();
         }
 
-        // Coordinate state transition without invoice status race
-        applyInvoiceStatusTransition(invoice.getId());
-        Invoice updatedInvoice = invoiceRepository.findById(invoice.getId()).orElse(invoice);
+        if (isCash) {
+            // Physical cash verified at cashier desk -> immediate confirmation
+            org.bson.types.Decimal128 decPayAmount = new org.bson.types.Decimal128(payAmount);
+            org.bson.types.Decimal128 decNegPayAmount = new org.bson.types.Decimal128(payAmount.negate());
 
-        // 4. Create Confirmed Payment Record
-        User currentUser = authz.getCurrentUser();
-        String paymentNumber = "PAY-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999);
+            Query query = Query.query(
+                    Criteria.where("_id").is(invoice.getId())
+                            .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.PARTIALLY_PAID.name(), InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID))
+                            .and("outstandingAmount").gte(decPayAmount)
+            );
+            Update update = new Update()
+                    .inc("paidAmount", decPayAmount)
+                    .inc("outstandingAmount", decNegPayAmount)
+                    .set("paymentMethod", request.getMethod())
+                    .set("updatedAt", Instant.now());
 
-        BillingPayment payment = BillingPayment.builder()
-                .paymentNumber(paymentNumber)
-                .invoiceId(invoice.getId())
-                .patientId(invoice.getPatientId())
-                .amount(payAmount)
-                .refundableAmount(payAmount)
-                .refundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING))
-                .currency(invoice.getCurrency())
-                .method(request.getMethod())
-                .status(PaymentStatus.CONFIRMED)
-                .externalReference(request.getExternalReference())
-                .idempotencyKey(request.getIdempotencyKey() != null ? request.getIdempotencyKey().trim() : null)
-                .receivedAt(Instant.now())
-                .confirmedAt(Instant.now())
-                .confirmedByUserId(currentUser != null ? currentUser.getId() : "SYSTEM")
-                .notes(request.getNotes())
-                .createdAt(Instant.now())
-                .updatedAt(Instant.now())
-                .build();
+            UpdateResult result = mongoTemplate.updateFirst(query, update, Invoice.class);
+            if (result.getModifiedCount() == 0) {
+                log.warn("Concurrent payment conflict detected on invoice {}. Outstanding balance insufficient.", invoice.getInvoiceNumber());
+                throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
+                        "Concurrent balance update conflict on invoice " + invoice.getInvoiceNumber() + ". Please retry.");
+            }
 
-        BillingPayment savedPayment = null;
-        try {
-            savedPayment = paymentRepository.save(payment);
+            applyInvoiceStatusTransition(invoice.getId());
+            Invoice updatedInvoice = invoiceRepository.findById(invoice.getId()).orElse(invoice);
 
-            // 5. Create Immutable Ledger Entry
+            payment.setStatus(PaymentStatus.CONFIRMED);
+            payment.setConfirmedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+            payment.setConfirmedByUserId(currentUserId);
+            payment.setRefundableAmount(payAmount);
+            payment.setRefundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
+            payment.setUpdatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+
+            BillingPayment savedPayment = paymentRepository.save(payment);
+
+            // Immutable ledger entry
             BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
                     .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
                     .invoiceId(invoice.getId())
@@ -629,74 +720,50 @@ public class BillingServiceImpl implements BillingService {
                     .referenceType("PAYMENT")
                     .referenceId(savedPayment.getPaymentNumber())
                     .occurredAt(Instant.now())
-                    .actorUserId(currentUser != null ? currentUser.getId() : "SYSTEM")
+                    .actorUserId(currentUserId)
                     .idempotencyKey(request.getIdempotencyKey())
                     .build();
             ledgerEntryRepository.save(ledgerEntry);
-        } catch (Throwable persistenceFailure) {
-            log.error("CRITICAL: Downstream persistence failed after deducting balance for invoice {}. Rolling back invoice balance deduction and marking payment FAILED.",
-                    invoice.getInvoiceNumber(), persistenceFailure);
 
-            // 1. Mark saved payment as FAILED with audit reason so no orphan CONFIRMED payment remains
-            if (savedPayment != null && savedPayment.getId() != null) {
-                try {
-                    mongoTemplate.updateFirst(
-                            Query.query(Criteria.where("_id").is(savedPayment.getId())),
-                            new Update()
-                                    .set("status", PaymentStatus.FAILED)
-                                    .set("notes", (savedPayment.getNotes() != null ? savedPayment.getNotes() + " | " : "")
-                                            + "DOWNSTREAM_PERSISTENCE_FAILED: " + persistenceFailure.getMessage())
-                                    .set("updatedAt", Instant.now()),
-                            BillingPayment.class
-                    );
-                    log.info("Successfully marked payment {} as FAILED following ledger failure.", savedPayment.getPaymentNumber());
-                } catch (Throwable markFailedError) {
-                    log.error("Failed to mark payment {} as FAILED: {}", savedPayment.getId(), markFailedError.getMessage());
-                }
-            }
+            auditService.audit(invoice.getPatientId(), "BillingPayment", savedPayment.getId(),
+                    ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
+                    "Confirmed cash payment " + savedPayment.getPaymentNumber() + " of " + payAmount + " for invoice " + invoice.getInvoiceNumber());
 
-            // 2. Compensating rollback: restore deducted balance atomically
-            try {
-                mongoTemplate.updateFirst(
-                        Query.query(Criteria.where("_id").is(invoice.getId())),
-                        new Update()
-                                .inc("paidAmount", decNegPayAmount)
-                                .inc("outstandingAmount", decPayAmount)
-                                .set("updatedAt", Instant.now()),
-                        Invoice.class
-                );
-                // Also revert any invoice status transition
-                revertInvoiceStatusAfterRollback(invoice.getId());
-                log.info("Successfully restored invoice {} balance after downstream persistence failure.", invoice.getInvoiceNumber());
-            } catch (Throwable rollbackError) {
-                log.error("FATAL: Compensating balance rollback failed for invoice {}! Manual reconciliation mandatory.",
-                        invoice.getInvoiceNumber(), rollbackError);
-            }
-
-            if (persistenceFailure instanceof RuntimeException) {
-                throw (RuntimeException) persistenceFailure;
-            }
-            throw new RuntimeException("Payment persistence failed; invoice balance reverted and payment marked FAILED.", persistenceFailure);
-        }
-
-        // 6. Audit & Outbox Notifications
-        auditService.audit(invoice.getPatientId(), "BillingPayment", savedPayment.getId(),
-                ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
-                "Confirmed payment " + savedPayment.getPaymentNumber() + " of " + payAmount + " for invoice " + invoice.getInvoiceNumber());
-
-        publishOutboxNotification(invoice.getPatientId(), "PAYMENT_CONFIRMED", savedPayment.getId(),
-                "Payment Confirmed",
-                "Your payment of " + savedPayment.getCurrency() + " " + payAmount + " for invoice " + invoice.getInvoiceNumber() + " has been confirmed.",
-                "/patient/billing");
-
-        if (updatedInvoice.getStatus() == InvoiceStatus.PAID) {
-            publishOutboxNotification(invoice.getPatientId(), "INVOICE_PAID", invoice.getId(),
-                    "Invoice Paid in Full",
-                    "Invoice " + invoice.getInvoiceNumber() + " is now fully settled.",
+            publishOutboxNotification(invoice.getPatientId(), "PAYMENT_CONFIRMED", savedPayment.getId(),
+                    "Payment Confirmed",
+                    "Your cash payment of " + savedPayment.getCurrency() + " " + payAmount + " for invoice " + invoice.getInvoiceNumber() + " has been confirmed.",
                     "/patient/billing");
-        }
 
-        return savedPayment;
+            if (updatedInvoice.getStatus() == InvoiceStatus.PAID) {
+                publishOutboxNotification(invoice.getPatientId(), "INVOICE_PAID", invoice.getId(),
+                        "Invoice Paid in Full",
+                        "Invoice " + invoice.getInvoiceNumber() + " is now fully settled.",
+                        "/patient/billing");
+            }
+
+            return savedPayment;
+        } else {
+            // Non-cash external payment (CARD_TERMINAL, BANK_TRANSFER, INSURANCE_SETTLEMENT)
+            // Must remain PENDING until explicitly verified/confirmed by staff
+            payment.setStatus(PaymentStatus.PENDING);
+            payment.setRefundableAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
+            payment.setRefundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
+            payment.setConfirmedAt(null);
+            payment.setConfirmedByUserId(null);
+
+            BillingPayment savedPayment = paymentRepository.save(payment);
+
+            auditService.audit(invoice.getPatientId(), "BillingPayment", savedPayment.getId(),
+                    ClinicalAuditAction.PAYMENT_RECORDED, "SUCCESS", null,
+                    "Initiated external payment " + savedPayment.getPaymentNumber() + " (" + request.getMethod() + ") of " + payAmount + " for invoice " + invoice.getInvoiceNumber() + " [PENDING]");
+
+            publishOutboxNotification(invoice.getPatientId(), "PAYMENT_INITIATED", savedPayment.getId(),
+                    "Payment Pending Verification",
+                    "Your payment of " + savedPayment.getCurrency() + " " + payAmount + " for invoice " + invoice.getInvoiceNumber() + " is pending confirmation.",
+                    "/patient/billing");
+
+            return savedPayment;
+        }
     }
 
     private InvoiceStatus applyInvoiceStatusTransition(String invoiceId) {
@@ -724,101 +791,77 @@ public class BillingServiceImpl implements BillingService {
         }
     }
 
-    private void revertInvoiceStatusAfterRollback(String invoiceId) {
-        Invoice invoice = invoiceRepository.findById(invoiceId).orElse(null);
-        if (invoice == null) return;
-
-        BigDecimal paid = invoice.getPaidAmount() != null ? invoice.getPaidAmount() : BigDecimal.ZERO;
-        if (paid.compareTo(BigDecimal.ZERO) <= 0) {
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoiceId)),
-                    new Update().set("status", InvoiceStatus.ISSUED).set("updatedAt", Instant.now()),
-                    Invoice.class
-            );
-        } else {
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoiceId)),
-                    new Update().set("status", InvoiceStatus.PARTIALLY_PAID).set("updatedAt", Instant.now()),
-                    Invoice.class
-            );
-        }
-    }
 
     @Override
-    @Transactional
     public BillingPayment confirmPayment(String paymentId) {
         if (!authz.canRecordPayments()) {
             throw new AccessDeniedException("Only Billing Staff and Administrators can confirm payments");
         }
-        BillingPayment payment = paymentRepository.findById(paymentId)
+        BillingPayment initialCheck = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found: " + paymentId));
 
-        // Idempotency: if already confirmed, return without re-debiting balance or rewriting confirmedAt
-        if (payment.getStatus() == PaymentStatus.CONFIRMED) {
-            log.info("Payment {} is already CONFIRMED. Idempotent return.", payment.getPaymentNumber());
-            return payment;
+        if (initialCheck.getStatus() == PaymentStatus.CONFIRMED) {
+            log.info("Payment {} is already CONFIRMED. Idempotent return.", initialCheck.getPaymentNumber());
+            return initialCheck;
         }
 
-        if (payment.getStatus() != PaymentStatus.PENDING) {
-            throw new BadRequestException("Only PENDING payments can be confirmed. Current status: " + payment.getStatus());
+        if (initialCheck.getStatus() != PaymentStatus.PENDING) {
+            throw new BadRequestException("Only PENDING payments can be confirmed. Current status: " + initialCheck.getStatus());
         }
 
         User currentUser = authz.getCurrentUser();
-        Invoice invoice = invoiceRepository.findById(payment.getInvoiceId())
-                .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + payment.getInvoiceId()));
+        String currentUserId = currentUser != null ? currentUser.getId() : "SYSTEM";
 
-        if (invoice.getStatus() == InvoiceStatus.VOID) {
-            throw new BadRequestException("Cannot confirm payment on VOID invoice: " + invoice.getInvoiceNumber());
-        }
+        return executeInTransactionWithRetry(status -> {
+            BillingPayment payment = paymentRepository.findById(paymentId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Payment not found: " + paymentId));
 
-        BigDecimal payAmount = payment.getAmount().setScale(2, ROUNDING);
-        org.bson.types.Decimal128 decPayAmount = new org.bson.types.Decimal128(payAmount);
-        org.bson.types.Decimal128 decNegPayAmount = new org.bson.types.Decimal128(payAmount.negate());
+            if (payment.getStatus() == PaymentStatus.CONFIRMED) {
+                return payment;
+            }
+            if (payment.getStatus() != PaymentStatus.PENDING) {
+                throw new BadRequestException("Only PENDING payments can be confirmed. Current status: " + payment.getStatus());
+            }
 
-        // Atomically deduct invoice balance
-        Query query = Query.query(
-                Criteria.where("_id").is(invoice.getId())
-                        .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.PARTIALLY_PAID.name(), InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID))
-                        .and("outstandingAmount").gte(decPayAmount)
-        );
-        Update update = new Update()
-                .inc("paidAmount", decPayAmount)
-                .inc("outstandingAmount", decNegPayAmount)
-                .set("paymentMethod", payment.getMethod())
-                .set("updatedAt", Instant.now());
+            Invoice invoice = invoiceRepository.findById(payment.getInvoiceId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Invoice not found: " + payment.getInvoiceId()));
 
-        UpdateResult result = mongoTemplate.updateFirst(query, update, Invoice.class);
-        if (result.getModifiedCount() == 0) {
-            throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
-                    "Invoice balance insufficient to confirm payment " + payment.getPaymentNumber());
-        }
+            if (invoice.getStatus() == InvoiceStatus.VOID) {
+                throw new BadRequestException("Cannot confirm payment on VOID invoice: " + invoice.getInvoiceNumber());
+            }
 
-        // Atomically transition payment status PENDING -> CONFIRMED
-        Query payQuery = Query.query(Criteria.where("_id").is(payment.getId()).and("status").is(PaymentStatus.PENDING));
-        Update payUpdate = new Update()
-                .set("status", PaymentStatus.CONFIRMED)
-                .set("confirmedAt", Instant.now())
-                .set("confirmedByUserId", currentUser.getId())
-                .set("refundableAmount", decPayAmount)
-                .set("refundedAmount", new org.bson.types.Decimal128(BigDecimal.ZERO))
-                .set("updatedAt", Instant.now());
+            BigDecimal payAmount = payment.getAmount().setScale(2, ROUNDING);
+            org.bson.types.Decimal128 decPayAmount = new org.bson.types.Decimal128(payAmount);
+            org.bson.types.Decimal128 decNegPayAmount = new org.bson.types.Decimal128(payAmount.negate());
 
-        UpdateResult payRes = mongoTemplate.updateFirst(payQuery, payUpdate, BillingPayment.class);
-        if (payRes.getModifiedCount() == 0) {
-            // Rollback invoice deduction if payment was concurrently modified
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoice.getId())),
-                    new Update().inc("paidAmount", decNegPayAmount).inc("outstandingAmount", decPayAmount),
-                    Invoice.class
+            Query query = Query.query(
+                    Criteria.where("_id").is(invoice.getId())
+                            .and("status").in(List.of(InvoiceStatus.ISSUED.name(), InvoiceStatus.PARTIALLY_PAID.name(), InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID))
+                            .and("outstandingAmount").gte(decPayAmount)
             );
-            return paymentRepository.findById(payment.getId()).orElse(payment);
-        }
+            Update update = new Update()
+                    .inc("paidAmount", decPayAmount)
+                    .inc("outstandingAmount", decNegPayAmount)
+                    .set("paymentMethod", payment.getMethod())
+                    .set("updatedAt", Instant.now());
 
-        // Coordinate invoice state transition
-        applyInvoiceStatusTransition(invoice.getId());
+            UpdateResult result = mongoTemplate.updateFirst(query, update, Invoice.class);
+            if (result.getModifiedCount() == 0) {
+                throw new PaymentConflictException("CONCURRENT_PAYMENT_CONFLICT",
+                        "Invoice balance insufficient to confirm payment " + payment.getPaymentNumber());
+            }
 
-        // Create immutable ledger entry
-        try {
+            payment.setStatus(PaymentStatus.CONFIRMED);
+            payment.setConfirmedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+            payment.setConfirmedByUserId(currentUserId);
+            payment.setRefundableAmount(payAmount);
+            payment.setRefundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
+            payment.setUpdatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
+
+            BillingPayment confirmedPayment = paymentRepository.save(payment);
+
+            applyInvoiceStatusTransition(invoice.getId());
+
             BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
                     .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
                     .invoiceId(invoice.getId())
@@ -830,34 +873,30 @@ public class BillingServiceImpl implements BillingService {
                     .referenceType("PAYMENT")
                     .referenceId(payment.getPaymentNumber())
                     .occurredAt(Instant.now())
-                    .actorUserId(currentUser.getId())
+                    .actorUserId(currentUserId)
                     .idempotencyKey(payment.getIdempotencyKey())
                     .build();
             ledgerEntryRepository.save(ledgerEntry);
-        } catch (Throwable ledgerErr) {
-            log.error("Failed to persist ledger entry in confirmPayment for payment {}. Rolling back payment confirmation and invoice deduction.",
-                    payment.getPaymentNumber(), ledgerErr);
-            // Revert payment confirmation
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(payment.getId())),
-                    new Update().set("status", PaymentStatus.PENDING).unset("confirmedAt").set("updatedAt", Instant.now()),
-                    BillingPayment.class
-            );
-            // Revert invoice deduction
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(invoice.getId())),
-                    new Update().inc("paidAmount", decNegPayAmount).inc("outstandingAmount", decPayAmount),
-                    Invoice.class
-            );
-            revertInvoiceStatusAfterRollback(invoice.getId());
-            throw new RuntimeException("Payment confirmation failed due to ledger persistence error", ledgerErr);
-        }
 
-        auditService.audit(invoice.getPatientId(), "BillingPayment", payment.getId(),
-                ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
-                "Confirmed payment " + payment.getPaymentNumber() + " of " + payAmount + " for invoice " + invoice.getInvoiceNumber());
+            auditService.audit(invoice.getPatientId(), "BillingPayment", payment.getId(),
+                    ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
+                    "Confirmed payment " + payment.getPaymentNumber() + " of " + payAmount + " for invoice " + invoice.getInvoiceNumber());
 
-        return paymentRepository.findById(payment.getId()).orElseThrow();
+            publishOutboxNotification(invoice.getPatientId(), "PAYMENT_CONFIRMED", payment.getId(),
+                    "Payment Confirmed",
+                    "Your payment of " + payment.getCurrency() + " " + payAmount + " for invoice " + invoice.getInvoiceNumber() + " has been confirmed.",
+                    "/patient/billing");
+
+            Invoice reloadedInvoice = invoiceRepository.findById(invoice.getId()).orElse(invoice);
+            if (reloadedInvoice.getStatus() == InvoiceStatus.PAID) {
+                publishOutboxNotification(invoice.getPatientId(), "INVOICE_PAID", invoice.getId(),
+                        "Invoice Paid in Full",
+                        "Invoice " + invoice.getInvoiceNumber() + " is now fully settled.",
+                        "/patient/billing");
+            }
+
+            return confirmedPayment;
+        });
     }
 
     @Override
