@@ -140,4 +140,56 @@ public class BedSecurityAuthorizationTest {
             admissionService.getBedOccupancyHistory("bed-1");
         });
     }
+
+    @Test
+    @DisplayName("H9: Admin cannot impersonate physician to certify clinical discharge readiness")
+    void testAdminCannotCertifyClinicalDischargeReadiness() {
+        when(authz.getCurrentUser()).thenReturn(adminUser);
+        BedBooking booking = BedBooking.builder()
+                .id("booking-1")
+                .patientId("pat-a")
+                .bedId("bed-1")
+                .status("ADMITTED")
+                .build();
+        when(bedBookingRepository.findById("booking-1")).thenReturn(Optional.of(booking));
+
+        assertThrows(AccessDeniedException.class, () -> {
+            admissionService.prepareDischarge("booking-1", new com.hospital.backend.dto.bed.DischargeRequestDTO());
+        });
+    }
+
+    @Test
+    @DisplayName("H10: Doctor without clinical relationship cannot certify clinical discharge readiness")
+    void testDoctorWithoutRelationshipCannotCertifyDischarge() {
+        when(authz.getCurrentUser()).thenReturn(doctorUser);
+        BedBooking booking = BedBooking.builder()
+                .id("booking-1")
+                .patientId("pat-a")
+                .bedId("bed-1")
+                .status("ADMITTED")
+                .build();
+        when(bedBookingRepository.findById("booking-1")).thenReturn(Optional.of(booking));
+        when(authz.hasDoctorPatientRelationship(doctorUser.getId(), "pat-a")).thenReturn(false);
+
+        assertThrows(AccessDeniedException.class, () -> {
+            admissionService.prepareDischarge("booking-1", new com.hospital.backend.dto.bed.DischargeRequestDTO());
+        });
+    }
+
+    @Test
+    @DisplayName("H11: Discharge rejected if admission is not clinically cleared (DISCHARGE_READY)")
+    void testDischargeRejectedIfNotClinicallyCleared() {
+        when(authz.getCurrentUser()).thenReturn(adminUser);
+        BedBooking booking = BedBooking.builder()
+                .id("booking-1")
+                .patientId("pat-a")
+                .bedId("bed-1")
+                .status("ADMITTED")
+                .build();
+        when(bedBookingRepository.findById("booking-1")).thenReturn(Optional.of(booking));
+
+        assertThrows(com.hospital.backend.exception.InvalidBookingTransitionException.class, () -> {
+            admissionService.dischargePatient("booking-1", new com.hospital.backend.dto.bed.DischargeRequestDTO());
+        });
+    }
 }

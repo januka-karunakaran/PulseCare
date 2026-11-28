@@ -9,6 +9,7 @@ import com.hospital.backend.enums.OutboxChannel;
 import com.hospital.backend.enums.OutboxStatus;
 import com.hospital.backend.enums.Role;
 import com.hospital.backend.exception.BedAlreadyOccupiedException;
+import com.hospital.backend.exception.DuplicateResourceException;
 import com.hospital.backend.exception.InvalidBookingTransitionException;
 import com.hospital.backend.exception.ResourceNotFoundException;
 import com.hospital.backend.model.*;
@@ -103,12 +104,17 @@ public class AdmissionServiceImpl implements AdmissionService {
             }
         }
 
-        // 4. Idempotency check
+        // 4. Idempotency check with payload verification
         if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
             Optional<BedBooking> existing = bedBookingRepository.findByIdempotencyKey(request.getIdempotencyKey().trim());
             if (existing.isPresent()) {
-                log.info("Idempotent admission request returned existing admission: {}", existing.get().getId());
-                return toResponseDTO(existing.get(), patient, doctor);
+                BedBooking prev = existing.get();
+                if (!patient.getId().equals(prev.getPatientId()) || !request.getBedId().equals(prev.getBedId())) {
+                    throw new DuplicateResourceException("Idempotency key '" + request.getIdempotencyKey()
+                            + "' already used for a different admission payload");
+                }
+                log.info("Idempotent admission request returned existing admission: {}", prev.getId());
+                return toResponseDTO(prev, patient, doctor);
             }
         }
 
@@ -222,12 +228,17 @@ public class AdmissionServiceImpl implements AdmissionService {
             throw new IllegalArgumentException("Destination bed ID is mandatory");
         }
 
-        // 1. Idempotency check
+        // 1. Idempotency check with payload verification
         if (request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank()) {
             Optional<BedTransferRecord> existing = transferRepository.findByIdempotencyKey(request.getIdempotencyKey().trim());
             if (existing.isPresent()) {
-                log.info("Idempotent transfer request returned existing record: {}", existing.get().getId());
-                return existing.get();
+                BedTransferRecord prev = existing.get();
+                if (!admissionId.equals(prev.getAdmissionId()) || !request.getDestinationBedId().equals(prev.getDestinationBedId())) {
+                    throw new DuplicateResourceException("Idempotency key '" + request.getIdempotencyKey()
+                            + "' already used for a different transfer payload");
+                }
+                log.info("Idempotent transfer request returned existing record: {}", prev.getId());
+                return prev;
             }
         }
 
@@ -390,8 +401,13 @@ public class AdmissionServiceImpl implements AdmissionService {
         }
 
         User actor = authz.getCurrentUser();
-        if (actor.getRole() != Role.ADMIN && actor.getRole() != Role.DOCTOR) {
-            throw new AccessDeniedException("Only DOCTOR or ADMIN can certify clinical discharge readiness");
+        // Clinical discharge readiness must strictly be certified by a verified DOCTOR with a clinical relationship
+        if (actor.getRole() != Role.DOCTOR) {
+            throw new AccessDeniedException("Only an authorized treating physician (DOCTOR) can certify clinical discharge readiness");
+        }
+
+        if (!authz.hasDoctorPatientRelationship(actor.getId(), admission.getPatientId())) {
+            throw new AccessDeniedException("Doctor does not have an established clinical relationship with this patient");
         }
 
         Instant now = Instant.now();
@@ -419,8 +435,9 @@ public class AdmissionServiceImpl implements AdmissionService {
             return toResponseDTO(admission, null, null);
         }
 
-        if (!admission.isActive()) {
-            throw new InvalidBookingTransitionException("Admission is not active: " + admission.getStatus());
+        if (!"DISCHARGE_READY".equalsIgnoreCase(admission.getStatus())) {
+            throw new InvalidBookingTransitionException(
+                    "Admission must be clinically cleared (DISCHARGE_READY) before discharge. Current status: " + admission.getStatus());
         }
 
         User actor = authz.getCurrentUser();
@@ -431,7 +448,7 @@ public class AdmissionServiceImpl implements AdmissionService {
         Instant now = Instant.now();
         String currentBedId = admission.getCurrentBedId() != null ? admission.getCurrentBedId() : admission.getBedId();
 
-        // 1. Atomic release of Bed document (Condition: currentBookingId equals this admission)
+        // 1. Atomic release of Bed document (Condition: currentBookingId strictly equals this admission)
         Query releaseQuery = Query.query(Criteria.where("_id").is(currentBedId)
                 .and("currentBookingId").is(admission.getId()));
         Update releaseUpdate = new Update()
@@ -444,11 +461,9 @@ public class AdmissionServiceImpl implements AdmissionService {
                 FindAndModifyOptions.options().returnNew(true), Bed.class);
 
         if (releasedBed == null) {
-            // Verify if bed was already released or held by someone else
-            Bed bed = bedRepository.findById(currentBedId).orElse(null);
-            if (bed != null && !"AVAILABLE".equals(bed.getStatus()) && !"CLEANING".equals(bed.getStatus())) {
-                throw new InvalidBookingTransitionException("Bed currentBookingId does not match the admission being discharged");
-            }
+            // Bed currentBookingId does not match this admission
+            log.error("Discharge aborted: Bed {} currentBookingId mismatch for admission {}", currentBedId, admission.getId());
+            throw new InvalidBookingTransitionException("Bed currentBookingId does not match the admission being discharged");
         }
 
         // 2. Update Admission to DISCHARGED
@@ -533,15 +548,19 @@ public class AdmissionServiceImpl implements AdmissionService {
             return;
         }
 
-        long hours = Math.max(1, Duration.between(admission.getAdmittedAt(), admission.getDischargedAt()).toHours());
-        long billableDays = Math.max(1, (hours + 23) / 24); // Minimum 1 day, ceil to 24h block
+        Duration duration = Duration.between(admission.getAdmittedAt(), admission.getDischargedAt());
+        long totalMinutes = Math.max(0, duration.toMinutes());
+        // Billable days: Minimum 1 day. Any partial day after 24h is calculated in exact 24h blocks or ceiling
+        long billableDays = Math.max(1, (totalMinutes + 1439) / 1440);
 
-        BigDecimal rate = BigDecimal.valueOf(500.00);
-        if (bed != null && bed.getAuthoritativeRate() != null && bed.getAuthoritativeRate().compareTo(BigDecimal.ZERO) > 0) {
-            rate = bed.getAuthoritativeRate();
+        BigDecimal authoritativeRate = (bed != null) ? bed.getAuthoritativeRate() : BigDecimal.ZERO;
+        String bedNumber = bed != null ? bed.getBedNumber() : admission.getCurrentBedId();
+
+        if (authoritativeRate == null || authoritativeRate.compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("Bed {} has no authoritative rate configured. Registering pending rate charge for admission {}",
+                    bedNumber, admission.getId());
         }
 
-        String bedNumber = bed != null ? bed.getBedNumber() : admission.getCurrentBedId();
         String description = "Inpatient Bed Stay: Bed " + bedNumber + " (" + billableDays + " days)";
 
         billingService.registerClinicalCharge(
@@ -561,12 +580,15 @@ public class AdmissionServiceImpl implements AdmissionService {
         Bed bed = bedRepository.findById(bedId)
                 .orElseThrow(() -> new ResourceNotFoundException("Bed not found: " + bedId));
 
-        if ("OCCUPIED".equalsIgnoreCase(bed.getStatus())) {
-            throw new InvalidBookingTransitionException("Cannot mark an OCCUPIED bed as ready. Discharge the patient first.");
+        if (!"CLEANING".equalsIgnoreCase(bed.getStatus())) {
+            throw new InvalidBookingTransitionException(
+                    "Bed must be in CLEANING status before being marked AVAILABLE. Current status: " + bed.getStatus());
         }
 
         Instant now = Instant.now();
         bed.setStatus("AVAILABLE");
+        bed.setCurrentBookingId(null);
+        bed.setCurrentPatientId(null);
         bed.setLastStateChangedAt(now);
         bed.setUpdatedAt(now);
         Bed saved = bedRepository.save(bed);
@@ -683,7 +705,22 @@ public class AdmissionServiceImpl implements AdmissionService {
 
     @Override
     public List<AdmissionResponseDTO> getDoctorAdmissions(String doctorId) {
-        List<BedBooking> list = bedBookingRepository.findByDoctorIdAndStatusIn(doctorId, ACTIVE_STATUSES);
+        User currentUser = authz.getCurrentUser();
+        String effectiveDoctorId = doctorId;
+
+        // If caller is DOCTOR, resolve doctor profile from authenticated user to prevent IDOR
+        if (currentUser.getRole() == Role.DOCTOR) {
+            Doctor doc = doctorRepository.findByUserId(currentUser.getId())
+                    .or(() -> doctorRepository.findById(currentUser.getId()))
+                    .orElse(null);
+            if (doc != null) {
+                effectiveDoctorId = doc.getId();
+            } else {
+                effectiveDoctorId = currentUser.getId();
+            }
+        }
+
+        List<BedBooking> list = bedBookingRepository.findByDoctorIdAndStatusIn(effectiveDoctorId, ACTIVE_STATUSES);
         return list.stream().map(b -> toResponseDTO(b, null, null)).toList();
     }
 

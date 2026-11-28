@@ -105,6 +105,9 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AppointmentRepository appointmentRepository;
+
+    @Autowired
     private MongoTemplate mongoTemplate;
 
     private User adminUser;
@@ -151,6 +154,14 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
                 .orElseGet(() -> patientRepository.save(Patient.builder().id("pat_inp_02").fullName("Bob").build()));
 
         authenticateAs(adminUser);
+
+        // Establish doctor-patient relationship for clinical discharge authorization
+        appointmentRepository.save(Appointment.builder()
+                .doctorId(doctor.getId())
+                .patientId(patient1.getId())
+                .status("COMPLETED")
+                .appointmentDate(java.time.LocalDate.now().toString())
+                .build());
 
         generalWard = wardService.createWard(HospitalWard.builder().wardCode("WARD-GEN-01").wardName("General Ward 1").wardType("GENERAL").build());
         icuWard = wardService.createWard(HospitalWard.builder().wardCode("WARD-ICU-01").wardName("ICU Ward 1").wardType("ICU").build());
@@ -284,6 +295,10 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
                     }
                 } catch (BedAlreadyOccupiedException ex) {
                     conflictCount.incrementAndGet();
+                } catch (org.springframework.dao.DataAccessException ex) {
+                    // Under multi-document transactions, concurrent writes on the contested bed document
+                    // throw TransientDataAccessException / MongoCommandException (WriteConflict 112)
+                    conflictCount.incrementAndGet();
                 } catch (Throwable t) {
                     t.printStackTrace();
                 }
@@ -356,12 +371,14 @@ public class BedAdmissionLifecycleMongoIntegrationTest {
         Bed cleanedBed = admissionService.markBedReady(sourceBed.getId());
         assertEquals("AVAILABLE", cleanedBed.getStatus());
 
-        // 4. Clinical Discharge Readiness
+        // 4. Clinical Discharge Readiness (must be performed by attending Doctor)
+        authenticateAs(doctorUser);
         admissionService.prepareDischarge(admission.getId(), new DischargeRequestDTO());
         BedBooking readyBooking = bedBookingRepository.findById(admission.getId()).orElseThrow();
         assertEquals("DISCHARGE_READY", readyBooking.getStatus());
 
-        // 5. Final Discharge
+        // 5. Final Discharge (performed by Admin or Bed Manager or Doctor)
+        authenticateAs(adminUser);
         AdmissionResponseDTO dischargeResponse = admissionService.dischargePatient(admission.getId(), new DischargeRequestDTO());
         assertEquals("DISCHARGED", dischargeResponse.getStatus());
 

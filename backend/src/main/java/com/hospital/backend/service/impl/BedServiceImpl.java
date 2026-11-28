@@ -128,6 +128,16 @@ public class BedServiceImpl implements BedService {
             }
         }
 
+        // Guard: Prevent setting status to OCCUPIED via direct updateBed API (must use admitPatient)
+        if (!"OCCUPIED".equalsIgnoreCase(existing.getStatus()) && "OCCUPIED".equalsIgnoreCase(bed.getStatus())) {
+            throw new InvalidBookingTransitionException("Cannot manually set bed status to OCCUPIED. Use the admission workflow.");
+        }
+
+        // Guard: Prevent resetting CLEANING bed directly to AVAILABLE without turnover protocol
+        if ("CLEANING".equalsIgnoreCase(existing.getStatus()) && "AVAILABLE".equalsIgnoreCase(bed.getStatus())) {
+            throw new InvalidBookingTransitionException("Cannot bypass cleaning protocol. Use markBedReady endpoint.");
+        }
+
         existing.setBedNumber(bed.getBedNumber());
         existing.setType(bed.getType());
         existing.setStatus(bed.getStatus());
