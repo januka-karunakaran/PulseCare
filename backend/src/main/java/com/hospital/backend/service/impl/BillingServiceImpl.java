@@ -516,10 +516,18 @@ public class BillingServiceImpl implements BillingService {
                 BillingPayment p = existing.get();
                 if (p.getAmount().compareTo(request.getAmount().setScale(2, ROUNDING)) == 0 &&
                     p.getInvoiceId().equals(request.getInvoiceId())) {
-                    return p;
+                    if (p.getStatus() == PaymentStatus.CONFIRMED) {
+                        return p;
+                    }
+                    if (p.getStatus() == PaymentStatus.FAILED || p.getStatus() == PaymentStatus.CANCELLED) {
+                        log.info("Previous payment with idempotencyKey {} failed/cancelled. Allowing clean retry.", request.getIdempotencyKey());
+                    } else {
+                        return p;
+                    }
+                } else {
+                    throw new PaymentConflictException("IDEMPOTENCY_CONFLICT",
+                            "Idempotency key '" + request.getIdempotencyKey() + "' already used with different parameters");
                 }
-                throw new PaymentConflictException("IDEMPOTENCY_CONFLICT",
-                        "Idempotency key '" + request.getIdempotencyKey() + "' already used with different parameters");
             }
         }
 
@@ -605,7 +613,7 @@ public class BillingServiceImpl implements BillingService {
                 .updatedAt(Instant.now())
                 .build();
 
-        BillingPayment savedPayment;
+        BillingPayment savedPayment = null;
         try {
             savedPayment = paymentRepository.save(payment);
 
@@ -626,10 +634,29 @@ public class BillingServiceImpl implements BillingService {
                     .build();
             ledgerEntryRepository.save(ledgerEntry);
         } catch (Throwable persistenceFailure) {
-            log.error("CRITICAL: Downstream persistence failed after deducting balance for invoice {}. Rolling back invoice balance deduction.",
+            log.error("CRITICAL: Downstream persistence failed after deducting balance for invoice {}. Rolling back invoice balance deduction and marking payment FAILED.",
                     invoice.getInvoiceNumber(), persistenceFailure);
+
+            // 1. Mark saved payment as FAILED with audit reason so no orphan CONFIRMED payment remains
+            if (savedPayment != null && savedPayment.getId() != null) {
+                try {
+                    mongoTemplate.updateFirst(
+                            Query.query(Criteria.where("_id").is(savedPayment.getId())),
+                            new Update()
+                                    .set("status", PaymentStatus.FAILED)
+                                    .set("notes", (savedPayment.getNotes() != null ? savedPayment.getNotes() + " | " : "")
+                                            + "DOWNSTREAM_PERSISTENCE_FAILED: " + persistenceFailure.getMessage())
+                                    .set("updatedAt", Instant.now()),
+                            BillingPayment.class
+                    );
+                    log.info("Successfully marked payment {} as FAILED following ledger failure.", savedPayment.getPaymentNumber());
+                } catch (Throwable markFailedError) {
+                    log.error("Failed to mark payment {} as FAILED: {}", savedPayment.getId(), markFailedError.getMessage());
+                }
+            }
+
+            // 2. Compensating rollback: restore deducted balance atomically
             try {
-                // Compensating rollback: restore deducted balance atomically
                 mongoTemplate.updateFirst(
                         Query.query(Criteria.where("_id").is(invoice.getId())),
                         new Update()
@@ -640,14 +667,16 @@ public class BillingServiceImpl implements BillingService {
                 );
                 // Also revert any invoice status transition
                 revertInvoiceStatusAfterRollback(invoice.getId());
+                log.info("Successfully restored invoice {} balance after downstream persistence failure.", invoice.getInvoiceNumber());
             } catch (Throwable rollbackError) {
                 log.error("FATAL: Compensating balance rollback failed for invoice {}! Manual reconciliation mandatory.",
                         invoice.getInvoiceNumber(), rollbackError);
             }
+
             if (persistenceFailure instanceof RuntimeException) {
                 throw (RuntimeException) persistenceFailure;
             }
-            throw new RuntimeException("Payment persistence failed; invoice balance reverted.", persistenceFailure);
+            throw new RuntimeException("Payment persistence failed; invoice balance reverted and payment marked FAILED.", persistenceFailure);
         }
 
         // 6. Audit & Outbox Notifications
@@ -789,21 +818,40 @@ public class BillingServiceImpl implements BillingService {
         applyInvoiceStatusTransition(invoice.getId());
 
         // Create immutable ledger entry
-        BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
-                .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
-                .invoiceId(invoice.getId())
-                .paymentId(payment.getId())
-                .patientId(invoice.getPatientId())
-                .entryType(LedgerEntryType.PAYMENT)
-                .amount(payAmount)
-                .currency(invoice.getCurrency())
-                .referenceType("PAYMENT")
-                .referenceId(payment.getPaymentNumber())
-                .occurredAt(Instant.now())
-                .actorUserId(currentUser.getId())
-                .idempotencyKey(payment.getIdempotencyKey())
-                .build();
-        ledgerEntryRepository.save(ledgerEntry);
+        try {
+            BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
+                    .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
+                    .invoiceId(invoice.getId())
+                    .paymentId(payment.getId())
+                    .patientId(invoice.getPatientId())
+                    .entryType(LedgerEntryType.PAYMENT)
+                    .amount(payAmount)
+                    .currency(invoice.getCurrency())
+                    .referenceType("PAYMENT")
+                    .referenceId(payment.getPaymentNumber())
+                    .occurredAt(Instant.now())
+                    .actorUserId(currentUser.getId())
+                    .idempotencyKey(payment.getIdempotencyKey())
+                    .build();
+            ledgerEntryRepository.save(ledgerEntry);
+        } catch (Throwable ledgerErr) {
+            log.error("Failed to persist ledger entry in confirmPayment for payment {}. Rolling back payment confirmation and invoice deduction.",
+                    payment.getPaymentNumber(), ledgerErr);
+            // Revert payment confirmation
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(payment.getId())),
+                    new Update().set("status", PaymentStatus.PENDING).unset("confirmedAt").set("updatedAt", Instant.now()),
+                    BillingPayment.class
+            );
+            // Revert invoice deduction
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(invoice.getId())),
+                    new Update().inc("paidAmount", decNegPayAmount).inc("outstandingAmount", decPayAmount),
+                    Invoice.class
+            );
+            revertInvoiceStatusAfterRollback(invoice.getId());
+            throw new RuntimeException("Payment confirmation failed due to ledger persistence error", ledgerErr);
+        }
 
         auditService.audit(invoice.getPatientId(), "BillingPayment", payment.getId(),
                 ClinicalAuditAction.PAYMENT_CONFIRMED, "SUCCESS", null,
