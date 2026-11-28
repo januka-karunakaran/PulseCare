@@ -700,10 +700,11 @@ public class BillingServiceImpl implements BillingService {
             Invoice updatedInvoice = invoiceRepository.findById(invoice.getId()).orElse(invoice);
 
             payment.setStatus(PaymentStatus.CONFIRMED);
-            payment.setConfirmedAt(Instant.now());
+            payment.setConfirmedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
             payment.setConfirmedByUserId(currentUserId);
             payment.setRefundableAmount(payAmount);
             payment.setRefundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
+            payment.setUpdatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
 
             BillingPayment savedPayment = paymentRepository.save(payment);
 
@@ -851,11 +852,11 @@ public class BillingServiceImpl implements BillingService {
             }
 
             payment.setStatus(PaymentStatus.CONFIRMED);
-            payment.setConfirmedAt(Instant.now());
+            payment.setConfirmedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
             payment.setConfirmedByUserId(currentUserId);
             payment.setRefundableAmount(payAmount);
             payment.setRefundedAmount(BigDecimal.ZERO.setScale(2, ROUNDING));
-            payment.setUpdatedAt(Instant.now());
+            payment.setUpdatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS));
 
             BillingPayment confirmedPayment = paymentRepository.save(payment);
 

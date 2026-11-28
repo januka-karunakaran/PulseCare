@@ -352,7 +352,7 @@ public class BillingConcurrencyMongoIntegrationTest {
         // Second confirmation (IDEMPOTENT)
         BillingPayment secondConfirm = billingService.confirmPayment(payment.getId());
         assertEquals(PaymentStatus.CONFIRMED, secondConfirm.getStatus());
-        assertEquals(firstConfirmedAt, secondConfirm.getConfirmedAt(), "Confirmed timestamp must not be overwritten");
+        assertEquals(firstConfirmedAt.toEpochMilli(), secondConfirm.getConfirmedAt().toEpochMilli(), "Confirmed timestamp must not be overwritten");
 
         Invoice afterSecond = invoiceRepository.findById(invoice.getId()).orElseThrow();
         assertEquals(new BigDecimal("25.00"), afterSecond.getPaidAmount().setScale(2), "Balance must NOT be debited twice");
@@ -667,7 +667,9 @@ public class BillingConcurrencyMongoIntegrationTest {
         final String invoiceId = invoice.getId();
 
         // Controlled process termination proof on OS level
-        ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", "ping -n 5 127.0.0.1");
+        ProcessBuilder pb = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? new ProcessBuilder("cmd.exe", "/c", "ping -n 5 127.0.0.1")
+                : new ProcessBuilder("sleep", "10");
         Process proc = pb.start();
         assertTrue(proc.isAlive(), "Child process must be running");
         proc.destroyForcibly();
