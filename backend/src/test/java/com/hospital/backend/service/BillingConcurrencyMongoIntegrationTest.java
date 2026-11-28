@@ -10,6 +10,9 @@ import com.hospital.backend.exception.PaymentConflictException;
 import com.hospital.backend.model.*;
 import com.hospital.backend.repository.*;
 import com.hospital.backend.security.AuthorizationService;
+import com.hospital.backend.service.impl.BillingServiceImpl;
+import com.hospital.backend.service.BillingPdfService;
+import com.hospital.backend.service.ClinicalAuditService;
 import com.mongodb.ClientSessionOptions;
 import com.mongodb.client.ClientSession;
 import org.junit.jupiter.api.*;
@@ -329,6 +332,7 @@ public class BillingConcurrencyMongoIntegrationTest {
                 .amount(new BigDecimal("25.00"))
                 .currency("USD")
                 .method(PaymentMethod.BANK_TRANSFER)
+                .externalReference("TXN-BANK-12345")
                 .status(PaymentStatus.PENDING)
                 .receivedAt(Instant.now())
                 .createdAt(Instant.now())
@@ -646,11 +650,46 @@ public class BillingConcurrencyMongoIntegrationTest {
         mongoTemplate.indexOps(BillingPayment.class).dropAllIndexes();
     }
 
+    public static class MongoTransactionCrashWorker {
+        public static void main(String[] args) {
+            String mongoUri = args[0];
+            String dbName = args[1];
+            String invoiceId = args[2];
+            try (com.mongodb.client.MongoClient client = com.mongodb.client.MongoClients.create(mongoUri)) {
+                com.mongodb.client.ClientSession session = client.startSession();
+                session.startTransaction();
+                com.mongodb.client.MongoDatabase db = client.getDatabase(dbName);
+                db.getCollection("invoices").updateOne(
+                        session,
+                        com.mongodb.client.model.Filters.eq("_id", invoiceId),
+                        com.mongodb.client.model.Updates.combine(
+                                com.mongodb.client.model.Updates.set("paidAmount", org.bson.types.Decimal128.parse("50.00")),
+                                com.mongodb.client.model.Updates.set("outstandingAmount", org.bson.types.Decimal128.parse("50.00"))
+                        )
+                );
+                org.bson.Document paymentDoc = new org.bson.Document()
+                        .append("paymentNumber", "PAY-JVM-CRASH-TEST")
+                        .append("invoiceId", invoiceId)
+                        .append("amount", org.bson.types.Decimal128.parse("50.00"))
+                        .append("status", "CONFIRMED")
+                        .append("method", "CASH");
+                db.getCollection("billing_payments").insertOne(session, paymentDoc);
+
+                System.out.println("READY_FOR_TERMINATION");
+                System.out.flush();
+
+                Thread.sleep(60000);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
     @Test
-    @DisplayName("P0 - Crash Safety: Abrupt Client Disconnect / Controlled Termination Aborts Uncommitted Transaction")
-    void testProcessCrashBetweenWrites_ControlledTermination_AbortsTransaction() throws Exception {
+    @DisplayName("P0 - Real JVM Process Interruption: Process Terminated Mid-Transaction Forcibly Aborts Storage Writes")
+    void testProcessCrashBetweenWrites_RealJvmProcessTermination_AbortsTransaction() throws Exception {
         Invoice invoice = Invoice.builder()
-                .invoiceNumber("INV-CRASH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .invoiceNumber("INV-CRASH-JVM-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
                 .patientId(patient.getId())
                 .patientName(patient.getFullName())
                 .status(InvoiceStatus.ISSUED)
@@ -666,15 +705,86 @@ public class BillingConcurrencyMongoIntegrationTest {
         invoice = invoiceRepository.save(invoice);
         final String invoiceId = invoice.getId();
 
-        // Controlled process termination proof on OS level
-        ProcessBuilder pb = System.getProperty("os.name", "").toLowerCase().contains("win")
-                ? new ProcessBuilder("cmd.exe", "/c", "ping -n 5 127.0.0.1")
-                : new ProcessBuilder("sleep", "10");
+        String javaBin = java.nio.file.Paths.get(System.getProperty("java.home"), "bin", "java").toString();
+        String classpath = System.getProperty("java.class.path");
+        String mongoUri = mongoDBContainer.getReplicaSetUrl(ISOLATED_TEST_DB);
+
+        ProcessBuilder pb = new ProcessBuilder(
+                javaBin,
+                "-cp", classpath,
+                MongoTransactionCrashWorker.class.getName(),
+                mongoUri,
+                ISOLATED_TEST_DB,
+                invoiceId
+        );
+        pb.redirectErrorStream(true);
         Process proc = pb.start();
-        assertTrue(proc.isAlive(), "Child process must be running");
+
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(proc.getInputStream()))) {
+            String line;
+            boolean ready = false;
+            long start = System.currentTimeMillis();
+            while ((System.currentTimeMillis() - start < 15000) && (line = reader.readLine()) != null) {
+                if (line.contains("READY_FOR_TERMINATION")) {
+                    ready = true;
+                    break;
+                }
+            }
+            assertTrue(ready, "Child JVM process must start transaction and signal readiness");
+        }
+
         proc.destroyForcibly();
-        proc.waitFor(5, TimeUnit.SECONDS);
-        assertFalse(proc.isAlive(), "Child process must be terminated forcibly");
+        boolean exited = proc.waitFor(10, TimeUnit.SECONDS);
+        assertTrue(exited, "Child JVM process must be terminated forcibly");
+
+        // Verify from parent process:
+        // 1. No partial invoice updates
+        Invoice reloaded = invoiceRepository.findById(invoiceId).orElseThrow();
+        assertEquals(new BigDecimal("100.00"), reloaded.getOutstandingAmount().setScale(2), "Invoice balance must be untouched");
+        assertEquals(new BigDecimal("0.00"), reloaded.getPaidAmount().setScale(2));
+
+        // 2. No orphan confirmed payment
+        Optional<BillingPayment> orphan = paymentRepository.findByPaymentNumber("PAY-JVM-CRASH-TEST");
+        assertTrue(orphan.isEmpty(), "No uncommitted payment document must exist in MongoDB");
+
+        // 3. No incomplete ledger
+        List<BillingLedgerEntry> ledgers = ledgerEntryRepository.findByInvoiceIdOrderByOccurredAtAsc(invoiceId);
+        assertTrue(ledgers.isEmpty(), "No incomplete ledger must exist");
+
+        // 4. Safe retry after process termination
+        RecordPaymentRequest retryReq = RecordPaymentRequest.builder()
+                .invoiceId(invoiceId)
+                .amount(new BigDecimal("100.00"))
+                .method(PaymentMethod.CASH)
+                .build();
+        BillingPayment payment = billingService.recordPayment(retryReq);
+        assertNotNull(payment);
+        assertEquals(PaymentStatus.CONFIRMED, payment.getStatus());
+        Invoice finalInv = invoiceRepository.findById(invoiceId).orElseThrow();
+        assertEquals(InvoiceStatus.PAID, finalInv.getStatus());
+        assertEquals(new BigDecimal("100.00"), finalInv.getPaidAmount().setScale(2));
+        assertEquals(new BigDecimal("0.00"), finalInv.getOutstandingAmount().setScale(2));
+    }
+
+    @Test
+    @DisplayName("P0 - SESSION_ABORT_SIMULATION: Session Abruptly Closed Prior to Commit Leaks Zero Writes")
+    void testProcessCrashBetweenWrites_SessionAbortSimulation_AbortsTransaction() {
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-CRASH-SIM-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("100.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("100.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("100.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+        final String invoiceId = invoice.getId();
 
         // Simulate multi-document transaction interrupted mid-write prior to commit
         ClientSession session = mongoTemplate.getMongoDatabaseFactory().getSession(ClientSessionOptions.builder().build());
@@ -696,6 +806,7 @@ public class BillingConcurrencyMongoIntegrationTest {
                 .currency("USD")
                 .method(PaymentMethod.CASH)
                 .status(PaymentStatus.CONFIRMED)
+                .receivedAt(Instant.now())
                 .build();
         mongoTemplate.withSession(session).insert(uncommittedPayment);
 
@@ -709,6 +820,35 @@ public class BillingConcurrencyMongoIntegrationTest {
 
         Optional<BillingPayment> leaked = paymentRepository.findByPaymentNumber("PAY-CRASH-TEST-99");
         assertTrue(leaked.isEmpty(), "Uncommitted payment document must not exist in MongoDB");
+    }
+
+    @Test
+    @DisplayName("P0 - Fail-Closed: Missing Transaction Manager Cannot Silently Process Payment")
+    void testMissingTransactionManager_CannotSilentlyProcessPayment_FailsClosed() {
+        AuthorizationService mockAuthz = org.mockito.Mockito.mock(AuthorizationService.class);
+        org.mockito.Mockito.when(mockAuthz.canRecordPayments()).thenReturn(true);
+
+        BillingServiceImpl failClosed = new BillingServiceImpl(
+                catalogRepository, chargeRepository, invoiceRepository, paymentRepository,
+                ledgerEntryRepository,
+                org.mockito.Mockito.mock(BillingCreditNoteRepository.class),
+                refundRepository, patientRepository, userRepository,
+                org.mockito.Mockito.mock(NotificationOutboxRepository.class),
+                mongoTemplate,
+                mockAuthz,
+                org.mockito.Mockito.mock(ClinicalAuditService.class),
+                org.mockito.Mockito.mock(BillingPdfService.class),
+                null
+        );
+
+        RecordPaymentRequest req = RecordPaymentRequest.builder()
+                .invoiceId("dummy-inv")
+                .amount(new BigDecimal("20.00"))
+                .method(PaymentMethod.CASH)
+                .build();
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> failClosed.recordPayment(req));
+        assertTrue(ex.getMessage().contains("FAIL-CLOSED"));
     }
 
     @Test
