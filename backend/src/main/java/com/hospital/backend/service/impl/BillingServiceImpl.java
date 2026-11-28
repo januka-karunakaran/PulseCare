@@ -21,6 +21,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -502,7 +503,7 @@ public class BillingServiceImpl implements BillingService {
     // =========================================================================
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public BillingPayment recordPayment(RecordPaymentRequest request) {
         if (!authz.canRecordPayments()) {
             throw new AccessDeniedException("Only Billing Staff and Administrators can record payments");

@@ -78,7 +78,7 @@ public class AdmissionController {
     }
 
     @PostMapping("/{id}/discharge-ready")
-    @PreAuthorize("hasAnyRole('ADMIN', 'DOCTOR')")
+    @PreAuthorize("hasRole('DOCTOR')")
     public ResponseEntity<AdmissionResponseDTO> prepareDischarge(
             @PathVariable String id,
             @RequestBody(required = false) DischargeRequestDTO request) {

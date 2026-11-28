@@ -67,7 +67,16 @@ public class BedOccupancyAnalyticsServiceImpl implements BedOccupancyAnalyticsSe
         ZoneId zone = resolveZone(timeZoneId);
 
         // 1. Resolve filtered beds
-        List<Bed> allBeds = bedRepository.findAll();
+        List<Bed> allBeds;
+        try {
+            allBeds = bedRepository.findByActive(true);
+            if (allBeds == null || allBeds.isEmpty()) {
+                allBeds = bedRepository.findAll();
+            }
+        } catch (Exception e) {
+            allBeds = bedRepository.findAll();
+        }
+
         List<Bed> eligibleBeds = allBeds.stream()
                 .filter(b -> wardId == null || wardId.isBlank() || wardId.equals(b.getWardId()) || wardId.equalsIgnoreCase(b.getWard()))
                 .filter(b -> bedType == null || bedType.isBlank() || bedType.equalsIgnoreCase(b.getType()))
@@ -82,10 +91,11 @@ public class BedOccupancyAnalyticsServiceImpl implements BedOccupancyAnalyticsSe
         Map<String, Double> wardUtilization = new HashMap<>();
         Map<String, Double> bedTypeUtilization = new HashMap<>();
 
-        Map<String, Bed> bedMap = eligibleBeds.stream().collect(Collectors.toMap(Bed::getId, b -> b, (b1, b2) -> b1));
-
         for (Bed bed : eligibleBeds) {
             List<BedOccupancyEvent> bedEvents = eventRepository.findByBedIdOrderByOccurredAtAsc(bed.getId());
+            if (bedEvents == null || bedEvents.isEmpty()) {
+                bedEvents = eventRepository.findByBedIdAndOccurredAtBetweenOrderByOccurredAtAsc(bed.getId(), start.minus(Duration.ofDays(30)), end);
+            }
             double bedOccupiedHours = calculateBedOccupiedHoursInWindow(bedEvents, bed, start, end);
             totalOccupiedBedHours += bedOccupiedHours;
 
@@ -96,10 +106,10 @@ public class BedOccupancyAnalyticsServiceImpl implements BedOccupancyAnalyticsSe
             bedTypeUtilization.put(typeKey, bedTypeUtilization.getOrDefault(typeKey, 0.0) + bedOccupiedHours);
         }
 
-        // 3. Occupancy rate calculation (Safe against 0 denominator)
+        // 3. Occupancy rate calculation (Safe against 0 denominator, do not clamp >100% to mask invalid data)
         double occupancyRate = 0.0;
         if (totalAvailableBedHours > 0) {
-            occupancyRate = Math.min(100.0, (totalOccupiedBedHours / totalAvailableBedHours) * 100.0);
+            occupancyRate = (totalOccupiedBedHours / totalAvailableBedHours) * 100.0;
             occupancyRate = Math.round(occupancyRate * 100.0) / 100.0;
         }
 
@@ -128,11 +138,14 @@ public class BedOccupancyAnalyticsServiceImpl implements BedOccupancyAnalyticsSe
             completenessNotice = "No historical occupancy events recorded yet. Historical metrics derived from current real-time snapshot.";
         } else {
             List<BedOccupancyEvent> allRecorded = eventRepository.findAll();
-            Instant earliest = allRecorded.stream()
+            if (allRecorded == null || allRecorded.isEmpty()) {
+                allRecorded = eventRepository.findByOccurredAtBetweenOrderByOccurredAtAsc(Instant.EPOCH, end);
+            }
+            Instant earliest = (allRecorded != null) ? allRecorded.stream()
                     .map(BedOccupancyEvent::getOccurredAt)
                     .filter(Objects::nonNull)
                     .min(Comparator.naturalOrder())
-                    .orElse(start);
+                    .orElse(start) : start;
             Instant earliestDay = earliest.atZone(zone).truncatedTo(ChronoUnit.DAYS).toInstant();
             if (start.isBefore(earliestDay)) {
                 completenessStatus = "PARTIAL_HISTORY";
@@ -224,18 +237,18 @@ public class BedOccupancyAnalyticsServiceImpl implements BedOccupancyAnalyticsSe
             return 0.0;
         }
 
-        double totalStayHours = 0.0;
-        long counted = 0;
+        double totalCompletedStayHours = 0.0;
+        long completedStays = 0;
 
         for (BedBooking b : bookings) {
-            if (b.getAdmittedAt() != null) {
-                Instant stayEnd = b.getDischargedAt() != null ? b.getDischargedAt() : Instant.now();
-                totalStayHours += Duration.between(b.getAdmittedAt(), stayEnd).toMinutes() / 60.0;
-                counted++;
+            // Strictly compute ALOS over completed stays with authoritative dischargedAt
+            if (b.getAdmittedAt() != null && b.getDischargedAt() != null) {
+                totalCompletedStayHours += Duration.between(b.getAdmittedAt(), b.getDischargedAt()).toMinutes() / 60.0;
+                completedStays++;
             }
         }
 
-        return counted > 0 ? (totalStayHours / counted) : 0.0;
+        return completedStays > 0 ? (totalCompletedStayHours / completedStays) : 0.0;
     }
 
     private List<DailyOccupancyMetricDTO> generateDailyTimeline(Instant start, Instant end, List<Bed> eligibleBeds, ZoneId zone) {
