@@ -623,7 +623,7 @@ public class BillingConcurrencyMongoIntegrationTest {
                 .amount(BigDecimal.ONE)
                 .method(PaymentMethod.CASH)
                 .status(PaymentStatus.CONFIRMED)
-                .occurredAt(Instant.now())
+                .receivedAt(Instant.now())
                 .build());
 
         RecordPaymentRequest req = RecordPaymentRequest.builder()
