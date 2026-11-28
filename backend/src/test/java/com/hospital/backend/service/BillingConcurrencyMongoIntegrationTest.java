@@ -332,6 +332,7 @@ public class BillingConcurrencyMongoIntegrationTest {
                 .amount(new BigDecimal("25.00"))
                 .currency("USD")
                 .method(PaymentMethod.BANK_TRANSFER)
+                .externalReference("TXN-BANK-12345")
                 .status(PaymentStatus.PENDING)
                 .receivedAt(Instant.now())
                 .createdAt(Instant.now())
@@ -824,6 +825,9 @@ public class BillingConcurrencyMongoIntegrationTest {
     @Test
     @DisplayName("P0 - Fail-Closed: Missing Transaction Manager Cannot Silently Process Payment")
     void testMissingTransactionManager_CannotSilentlyProcessPayment_FailsClosed() {
+        AuthorizationService mockAuthz = org.mockito.Mockito.mock(AuthorizationService.class);
+        org.mockito.Mockito.when(mockAuthz.canRecordPayments()).thenReturn(true);
+
         BillingServiceImpl failClosed = new BillingServiceImpl(
                 catalogRepository, chargeRepository, invoiceRepository, paymentRepository,
                 ledgerEntryRepository,
@@ -831,7 +835,7 @@ public class BillingConcurrencyMongoIntegrationTest {
                 refundRepository, patientRepository, userRepository,
                 org.mockito.Mockito.mock(NotificationOutboxRepository.class),
                 mongoTemplate,
-                org.mockito.Mockito.mock(AuthorizationService.class),
+                mockAuthz,
                 org.mockito.Mockito.mock(ClinicalAuditService.class),
                 org.mockito.Mockito.mock(BillingPdfService.class),
                 null
