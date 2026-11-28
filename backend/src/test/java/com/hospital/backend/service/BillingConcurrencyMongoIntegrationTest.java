@@ -522,4 +522,61 @@ public class BillingConcurrencyMongoIntegrationTest {
 
         assertThrows(org.springframework.dao.DuplicateKeyException.class, () -> chargeRepository.save(duplicateCharge));
     }
+
+    @Test
+    @DisplayName("P0 - Failure Injection: Downstream Ledger/Payment Persistence Failure Rolls Back Invoice Balance Atomically")
+    void testFailureInjection_DownstreamPersistenceFailure_RollsBackInvoiceBalance() {
+        // Create an issued invoice with $100.00 outstanding balance
+        Invoice invoice = Invoice.builder()
+                .invoiceNumber("INV-FAIL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
+                .patientId(patient.getId())
+                .patientName(patient.getFullName())
+                .status(InvoiceStatus.ISSUED)
+                .subtotal(new BigDecimal("100.00"))
+                .discount(BigDecimal.ZERO)
+                .tax(BigDecimal.ZERO)
+                .totalAmount(new BigDecimal("100.00"))
+                .paidAmount(new BigDecimal("0.00"))
+                .outstandingAmount(new BigDecimal("100.00"))
+                .issuedAt(Instant.now())
+                .currency("USD")
+                .build();
+        invoice = invoiceRepository.save(invoice);
+        final String invoiceId = invoice.getId();
+
+        // Failure Injection: Inject a duplicate unique index violation on billing_ledger_entries collection
+        // by creating a unique index on entryType or referenceId, or inserting a conflicting document
+        mongoTemplate.indexOps(BillingLedgerEntry.class).ensureIndex(
+                new Index().on("currency", Sort.Direction.ASC).unique()
+        );
+        // Insert a document with currency USD into ledger entries to poison subsequent saves with currency USD
+        ledgerEntryRepository.save(BillingLedgerEntry.builder()
+                .entryNumber("LEDG-POISON-01")
+                .invoiceId("dummy-inv")
+                .currency("USD")
+                .amount(BigDecimal.ONE)
+                .entryType(LedgerEntryType.PAYMENT)
+                .occurredAt(Instant.now())
+                .build());
+
+        RecordPaymentRequest req = RecordPaymentRequest.builder()
+                .invoiceId(invoiceId)
+                .amount(new BigDecimal("25.00"))
+                .method(PaymentMethod.CASH)
+                .externalReference("TXN-FAIL-01")
+                .build();
+
+        // Attempting to record payment must fail downstream when saving ledger entry
+        assertThrows(RuntimeException.class, () -> billingService.recordPayment(req));
+
+        // Verification of Durable Consistency:
+        // Invoice balance must NOT remain changed (must be rolled back to 100.00 outstanding, 0.00 paid, status ISSUED)
+        Invoice reloaded = invoiceRepository.findById(invoiceId).orElseThrow();
+        assertEquals(InvoiceStatus.ISSUED, reloaded.getStatus(), "Invoice status must remain ISSUED after rollback");
+        assertEquals(new BigDecimal("100.00"), reloaded.getOutstandingAmount().setScale(2), "Outstanding balance must be fully restored to 100.00");
+        assertEquals(new BigDecimal("0.00"), reloaded.getPaidAmount().setScale(2), "Paid amount must be restored to 0.00");
+
+        // Cleanup index for subsequent tests
+        mongoTemplate.indexOps(BillingLedgerEntry.class).dropAllIndexes();
+    }
 }

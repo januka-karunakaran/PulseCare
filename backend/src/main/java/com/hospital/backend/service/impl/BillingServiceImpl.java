@@ -599,30 +599,56 @@ public class BillingServiceImpl implements BillingService {
                 .idempotencyKey(request.getIdempotencyKey() != null ? request.getIdempotencyKey().trim() : null)
                 .receivedAt(Instant.now())
                 .confirmedAt(Instant.now())
-                .confirmedByUserId(currentUser.getId())
+                .confirmedByUserId(currentUser != null ? currentUser.getId() : "SYSTEM")
                 .notes(request.getNotes())
                 .createdAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build();
 
-        BillingPayment savedPayment = paymentRepository.save(payment);
+        BillingPayment savedPayment;
+        try {
+            savedPayment = paymentRepository.save(payment);
 
-        // 5. Create Immutable Ledger Entry
-        BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
-                .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
-                .invoiceId(invoice.getId())
-                .paymentId(savedPayment.getId())
-                .patientId(invoice.getPatientId())
-                .entryType(LedgerEntryType.PAYMENT)
-                .amount(payAmount)
-                .currency(invoice.getCurrency())
-                .referenceType("PAYMENT")
-                .referenceId(savedPayment.getPaymentNumber())
-                .occurredAt(Instant.now())
-                .actorUserId(currentUser.getId())
-                .idempotencyKey(request.getIdempotencyKey())
-                .build();
-        ledgerEntryRepository.save(ledgerEntry);
+            // 5. Create Immutable Ledger Entry
+            BillingLedgerEntry ledgerEntry = BillingLedgerEntry.builder()
+                    .entryNumber("LEDG-" + Instant.now().getEpochSecond() + "-" + ThreadLocalRandom.current().nextInt(1000, 9999))
+                    .invoiceId(invoice.getId())
+                    .paymentId(savedPayment.getId())
+                    .patientId(invoice.getPatientId())
+                    .entryType(LedgerEntryType.PAYMENT)
+                    .amount(payAmount)
+                    .currency(invoice.getCurrency())
+                    .referenceType("PAYMENT")
+                    .referenceId(savedPayment.getPaymentNumber())
+                    .occurredAt(Instant.now())
+                    .actorUserId(currentUser != null ? currentUser.getId() : "SYSTEM")
+                    .idempotencyKey(request.getIdempotencyKey())
+                    .build();
+            ledgerEntryRepository.save(ledgerEntry);
+        } catch (Throwable persistenceFailure) {
+            log.error("CRITICAL: Downstream persistence failed after deducting balance for invoice {}. Rolling back invoice balance deduction.",
+                    invoice.getInvoiceNumber(), persistenceFailure);
+            try {
+                // Compensating rollback: restore deducted balance atomically
+                mongoTemplate.updateFirst(
+                        Query.query(Criteria.where("_id").is(invoice.getId())),
+                        new Update()
+                                .inc("paidAmount", decNegPayAmount)
+                                .inc("outstandingAmount", decPayAmount)
+                                .set("updatedAt", Instant.now()),
+                        Invoice.class
+                );
+                // Also revert any invoice status transition
+                revertInvoiceStatusAfterRollback(invoice.getId());
+            } catch (Throwable rollbackError) {
+                log.error("FATAL: Compensating balance rollback failed for invoice {}! Manual reconciliation mandatory.",
+                        invoice.getInvoiceNumber(), rollbackError);
+            }
+            if (persistenceFailure instanceof RuntimeException) {
+                throw (RuntimeException) persistenceFailure;
+            }
+            throw new RuntimeException("Payment persistence failed; invoice balance reverted.", persistenceFailure);
+        }
 
         // 6. Audit & Outbox Notifications
         auditService.audit(invoice.getPatientId(), "BillingPayment", savedPayment.getId(),
@@ -666,6 +692,26 @@ public class BillingServiceImpl implements BillingService {
             Update update = new Update().set("status", InvoiceStatus.PARTIALLY_PAID).set("updatedAt", Instant.now());
             mongoTemplate.updateFirst(query, update, Invoice.class);
             return InvoiceStatus.PARTIALLY_PAID;
+        }
+    }
+
+    private void revertInvoiceStatusAfterRollback(String invoiceId) {
+        Invoice invoice = invoiceRepository.findById(invoiceId).orElse(null);
+        if (invoice == null) return;
+
+        BigDecimal paid = invoice.getPaidAmount() != null ? invoice.getPaidAmount() : BigDecimal.ZERO;
+        if (paid.compareTo(BigDecimal.ZERO) <= 0) {
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(invoiceId)),
+                    new Update().set("status", InvoiceStatus.ISSUED).set("updatedAt", Instant.now()),
+                    Invoice.class
+            );
+        } else {
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(invoiceId)),
+                    new Update().set("status", InvoiceStatus.PARTIALLY_PAID).set("updatedAt", Instant.now()),
+                    Invoice.class
+            );
         }
     }
 
